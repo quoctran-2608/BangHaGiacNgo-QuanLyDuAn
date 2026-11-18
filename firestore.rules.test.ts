@@ -32,12 +32,15 @@ import {
   canUserCreateSubtask,
   canUserCreateSubtaskInParent,
   canUserEditTask,
+  compareTasksForMyWork,
   computeParentProgress,
+  evaluateMyWorkAttention,
   exportTasksToCSV,
   getCategoryVisualTheme,
   getDocumentDisplayLabel,
   getDocumentSourceLabel,
   getEffectiveCategory,
+  getMyWorkCoAssigneesInfo,
   getOfficialMemberDisplayName,
   getStatusMeta,
   getTaskDataReviewSummary,
@@ -46,6 +49,7 @@ import {
   isGenericDocumentLabel,
   isTaskManagerRole,
   MAX_LINKS_PER_GROUP,
+  partitionMyWorkTasks,
   resolveTaskAssignees,
   STATUS_META,
   UNSET_STATUS_META,
@@ -2045,7 +2049,8 @@ test('Case 10: Single official Project Display Name source, standardized task as
     ['MyTasksView', myTasksText],
   ] as const) {
     assert.equal(
-      src.includes('resolveTaskAssignees'),
+      src.includes('resolveTaskAssignees') ||
+        (name === 'MyTasksView' && src.includes('getMyWorkCoAssigneesInfo')),
       true,
       `${name} must use resolveTaskAssignees`
     );
@@ -2700,8 +2705,226 @@ test('Case 13: Task Visual System V2.0 separates Category, 5 Statuses + Thiếu 
   assert.equal(drawerText.includes('<ReviewBadge'), true);
   assert.equal(drawerText.includes('getTaskDataReviewSummary'), true);
 
-  assert.equal(myTasksText.includes('Thiếu trạng thái (chưa chọn)'), true);
+  assert.equal(myTasksText.includes('<StatusBadge status={task.status}'), true);
+  assert.equal(myTasksText.includes('<CategoryChip'), true);
+  assert.equal(myTasksText.includes('<ReviewBadge task={task} />'), true);
 });
+
+test('Case 14: My Work Dashboard V2.0 partitions personal vs group tasks, evaluates real attention signals, sorts deterministically, and preserves UI contracts', () => {
+  const refToday = new Date('2026-11-18T12:00:00.000Z');
+  const memberA: ProjectMember = {
+    uid: 'uid_quoc',
+    displayName: 'Quốc',
+    email: 'quoc@example.com',
+    role: 'member',
+    canApprove: false,
+    isActive: true,
+    sheetAlias: 'Quốc',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const approverMod: ProjectMember = {
+    uid: 'uid_sutinh',
+    displayName: 'Sư Tín',
+    email: 'sutin@example.com',
+    role: 'moderator',
+    canApprove: true,
+    isActive: true,
+    sheetAlias: 'Sư Tín',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const memberIdle: ProjectMember = {
+    uid: 'uid_no_tasks',
+    displayName: 'Tuấn',
+    email: 'tuan@example.com',
+    role: 'member',
+    canApprove: false,
+    isActive: true,
+    sheetAlias: 'Khả Tuệ',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  const baseTask: TaskItem = {
+    id: 't_base',
+    displayCode: '1',
+    parentId: null,
+    sortOrder: 0,
+    title: 'Mẫu',
+    categoryId: 'cat_outline',
+    category: 'Đề cương',
+    assignees: ['Quốc'],
+    assigneeUids: [memberA.uid],
+    status: 'Đang làm',
+    nextStep: 'Hoàn thiện đề cương',
+    dueDate: '2026-11-25',
+    updatedAt: null,
+    updatedBy: null,
+    version: 1,
+    referenceLinks: [],
+    resultLinks: [],
+    notes: null,
+    reviewFlags: [],
+    archivedAt: null,
+    archivedBy: null,
+    isTestRecord: false,
+  };
+
+  const myTasksPool: TaskItem[] = [
+    // 1. Direct task + Collective "Nhóm" (must NOT double count in group section!)
+    {
+      ...baseTask,
+      id: 't_1',
+      displayCode: '1',
+      assignees: ['Quốc', 'Nhóm'],
+      assigneeUids: [memberA.uid],
+      status: 'Đang làm',
+      nextStep: 'Rà soát mục lục',
+      dueDate: '2026-11-30',
+    },
+    // 2. Direct task overdue + missing nextStep while Đang làm
+    {
+      ...baseTask,
+      id: 't_2',
+      displayCode: '3.1',
+      assigneeUids: [memberA.uid],
+      status: 'Đang làm',
+      nextStep: null,
+      dueDate: '2026-11-10',
+    },
+    // 3. Direct task Chờ duyệt (attention only for approver, not plain member)
+    {
+      ...baseTask,
+      id: 't_3',
+      displayCode: '5.2',
+      assigneeUids: [memberA.uid, approverMod.uid],
+      status: 'Chờ duyệt',
+      nextStep: 'Chờ duyệt lần cuối',
+      dueDate: null,
+    },
+    // 4. Direct task with null status + reviewFlag
+    {
+      ...baseTask,
+      id: 't_4',
+      displayCode: '4.5',
+      assigneeUids: [memberA.uid, 'uid_unknown_ghost'],
+      status: null,
+      nextStep: 'Bổ sung trạng thái',
+      reviewFlags: ['missing_status'],
+      dueDate: null,
+    },
+    // 5. Collective-only group task (not assigned to memberA.uid)
+    {
+      ...baseTask,
+      id: 't_group_only',
+      displayCode: '5',
+      assignees: ['Nhóm'],
+      assigneeUids: [],
+      status: 'Tạm dừng',
+    },
+    // 6. Archived & B1 test tasks (strictly excluded)
+    {
+      ...baseTask,
+      id: 't_arch',
+      displayCode: '9.1',
+      assigneeUids: [memberA.uid],
+      archivedAt: '2026-11-01T00:00:00.000Z',
+    },
+    {
+      ...baseTask,
+      id: 'b1_test_hidden',
+      displayCode: 'T1',
+      assigneeUids: [memberA.uid],
+      isTestRecord: true,
+    },
+  ];
+
+  // 1 & 3. Member with 4 direct tasks + non-overlapping collective group section
+  const partitionedMember = partitionMyWorkTasks(myTasksPool, memberA.uid);
+  assert.equal(partitionedMember.directTasks.length, 4);
+  assert.equal(partitionedMember.collectiveOnlyTasks.length, 1);
+  assert.equal(partitionedMember.collectiveOnlyTasks[0].id, 't_group_only');
+
+  // 2. User with 0 direct tasks sees both collective "Nhóm" tasks (t_1 + t_group_only)
+  const partitionedIdle = partitionMyWorkTasks(myTasksPool, memberIdle.uid);
+  assert.equal(partitionedIdle.directTasks.length, 0);
+  assert.equal(partitionedIdle.collectiveOnlyTasks.length, 2);
+
+  // 4 & 6. Data-driven attention evaluation (overdue, missing nextStep, missing status, approver role on Chờ duyệt)
+  const attNormal = evaluateMyWorkAttention(myTasksPool[0], memberA, refToday);
+  assert.equal(attNormal.needsAttention, false);
+
+  const attOverdueMissingStep = evaluateMyWorkAttention(myTasksPool[1], memberA, refToday);
+  assert.equal(attOverdueMissingStep.needsAttention, true);
+  assert.equal(attOverdueMissingStep.isOverdue, true);
+  assert.equal(attOverdueMissingStep.missingNextStep, true);
+
+  const attPendingForMember = evaluateMyWorkAttention(myTasksPool[2], memberA, refToday);
+  assert.equal(attPendingForMember.pendingApprovalAction, false);
+  const attPendingForMod = evaluateMyWorkAttention(myTasksPool[2], approverMod, refToday);
+  assert.equal(attPendingForMod.pendingApprovalAction, true);
+  assert.equal(attPendingForMod.needsAttention, true);
+
+  const attNullStatus = evaluateMyWorkAttention(myTasksPool[3], memberA, refToday);
+  assert.equal(attNullStatus.hasDataIssue, true);
+  assert.equal(attNullStatus.needsAttention, true);
+
+  // 7. Co-assignee & neutral unknown UID resolution without repeating own name
+  const singleOwnerCoInfo = getMyWorkCoAssigneesInfo(myTasksPool[0], memberA.uid, [
+    memberA,
+    approverMod,
+  ]);
+  assert.deepEqual(singleOwnerCoInfo.coAssigneeNames, []);
+  assert.equal(singleOwnerCoInfo.unknownUidCount, 0);
+
+  const sharedTaskCoInfo = getMyWorkCoAssigneesInfo(myTasksPool[2], memberA.uid, [
+    memberA,
+    approverMod,
+  ]);
+  assert.deepEqual(sharedTaskCoInfo.coAssigneeNames, ['Sư Tín']);
+
+  const ghostUidCoInfo = getMyWorkCoAssigneesInfo(myTasksPool[3], memberA.uid, [
+    memberA,
+  ]);
+  assert.equal(ghostUidCoInfo.unknownUidCount, 1);
+
+  // 8. Deterministic sorting: priority puts attention tasks + earliest due date first
+  const sortedByPriority = [...partitionedMember.directTasks].sort((a, b) =>
+    compareTasksForMyWork(a, b, 'priority', memberA, refToday)
+  );
+  assert.equal(sortedByPriority[0].id, 't_2'); // needsAttention + earliest dueDate
+  assert.equal(sortedByPriority[1].id, 't_4'); // needsAttention (null status)
+  assert.equal(sortedByPriority[sortedByPriority.length - 1].id, 't_3'); // no attention + null dueDate
+
+  const sortedByCode = [...partitionedMember.directTasks].sort((a, b) =>
+    compareTasksForMyWork(a, b, 'code', memberA, refToday)
+  );
+  assert.deepEqual(
+    sortedByCode.map((t) => t.displayCode),
+    ['1', '3.1', '4.5', '5.2']
+  );
+
+  // 9. MyTasksView V2.0 structural & UI contracts
+  const freshMyTasksText = fs.readFileSync(
+    path.join(rootDir, 'src/components/MyTasksView.tsx'),
+    'utf8'
+  );
+  assert.equal(freshMyTasksText.includes('from-[#14243F]'), true);
+  assert.equal(freshMyTasksText.includes('getOfficialMemberDisplayName(currentUser)'), true);
+  assert.equal(freshMyTasksText.includes('currentUser.email'), false);
+  assert.equal(freshMyTasksText.includes('partitionMyWorkTasks'), true);
+  assert.equal(freshMyTasksText.includes('evaluateMyWorkAttention'), true);
+  assert.equal(freshMyTasksText.includes('compareTasksForMyWork'), true);
+  assert.equal(freshMyTasksText.includes('getMyWorkCoAssigneesInfo'), true);
+  assert.equal(freshMyTasksText.includes('Đã lưu:'), true);
+  assert.equal(freshMyTasksText.includes('Đang chọn:'), true);
+  assert.equal(freshMyTasksText.includes('Lưu trạng thái'), true);
+  assert.equal(freshMyTasksText.includes('Cần quyền duyệt'), false); // uses clean Vietnamese sentence
+  assert.equal(freshMyTasksText.includes('Đã duyệt · cần quyền duyệt để đổi'), true);
+  assert.equal(freshMyTasksText.includes('Việc chung của nhóm ('), true);
+  assert.equal(freshMyTasksText.includes('tài khoản chưa đối chiếu'), true);
+  assert.equal(freshMyTasksText.includes('border-l-4'), false);
+  assert.equal(freshMyTasksText.includes('border-l-2'), false);
+});
+
 
 
 

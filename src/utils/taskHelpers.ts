@@ -1057,3 +1057,160 @@ export function exportTasksToCSV(
 
   return '\uFEFF' + [headers.map(escapeCsv).join(','), ...rows].join('\n');
 }
+
+export type MyWorkSortOption = 'priority' | 'due_date' | 'code';
+
+export interface MyWorkAttentionSummary {
+  needsAttention: boolean;
+  isOverdue: boolean;
+  pendingApprovalAction: boolean;
+  missingNextStep: boolean;
+  hasDataIssue: boolean;
+  reasons: string[];
+}
+
+/**
+ * Computes data-driven attention signals for a task in "Việc của tôi".
+ * Uses strictly real task state (dueDate, approval action, missing nextStep while active, data review flags).
+ */
+export function evaluateMyWorkAttention(
+  task: TaskItem,
+  currentUser: ProjectMember,
+  referenceDate?: Date
+): MyWorkAttentionSummary {
+  const isOverdue = isTaskOverdue(task, referenceDate);
+  const pendingApprovalAction =
+    task.status === 'Chờ duyệt' && canUserApproveTask(currentUser, task);
+  const missingNextStep =
+    task.status === 'Đang làm' && !(task.nextStep ?? '').trim();
+  const dataReview = getTaskDataReviewSummary(task);
+  const hasDataIssue = dataReview.hasAnyIssue;
+
+  const reasons: string[] = [];
+  if (isOverdue) reasons.push('Quá hạn xử lý');
+  if (pendingApprovalAction) reasons.push('Chờ bạn phê duyệt');
+  if (missingNextStep) reasons.push('Thiếu bước tiếp theo');
+  if (dataReview.isMissingStatus) reasons.push('Thiếu trạng thái');
+  if (dataReview.dataFlags.length > 0) reasons.push('Cần rà soát dữ liệu');
+
+  return {
+    needsAttention:
+      isOverdue || pendingApprovalAction || missingNextStep || hasDataIssue,
+    isOverdue,
+    pendingApprovalAction,
+    missingNextStep,
+    hasDataIssue,
+    reasons,
+  };
+}
+
+/**
+ * Deterministic, stable comparator for "Việc của tôi".
+ */
+export function compareTasksForMyWork(
+  a: TaskItem,
+  b: TaskItem,
+  sortBy: MyWorkSortOption,
+  currentUser: ProjectMember,
+  referenceDate?: Date
+): number {
+  const compareDueDates = () => {
+    if (a.dueDate && b.dueDate) {
+      if (a.dueDate !== b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+    } else if (a.dueDate && !b.dueDate) {
+      return -1;
+    } else if (!a.dueDate && b.dueDate) {
+      return 1;
+    }
+    return 0;
+  };
+
+  const compareDisplayCodes = () => {
+    const byCode = a.displayCode.localeCompare(b.displayCode, 'vi', {
+      numeric: true,
+      sensitivity: 'base',
+    });
+    if (byCode !== 0) return byCode;
+    return a.sortOrder - b.sortOrder;
+  };
+
+  if (sortBy === 'priority') {
+    const attA = evaluateMyWorkAttention(a, currentUser, referenceDate);
+    const attB = evaluateMyWorkAttention(b, currentUser, referenceDate);
+    if (attA.needsAttention !== attB.needsAttention) {
+      return attA.needsAttention ? -1 : 1;
+    }
+    const dueCmp = compareDueDates();
+    if (dueCmp !== 0) return dueCmp;
+    const aDone = a.status === 'Hoàn thành';
+    const bDone = b.status === 'Hoàn thành';
+    if (aDone !== bDone) return aDone ? 1 : -1;
+    return compareDisplayCodes();
+  }
+
+  if (sortBy === 'due_date') {
+    const dueCmp = compareDueDates();
+    if (dueCmp !== 0) return dueCmp;
+    return compareDisplayCodes();
+  }
+
+  return compareDisplayCodes();
+}
+
+export interface MyWorkPartitionResult {
+  activeTasks: TaskItem[];
+  directTasks: TaskItem[];
+  collectiveOnlyTasks: TaskItem[];
+}
+
+/**
+ * Strictly partitions UID-assigned personal tasks from unassigned collective "Nhóm" tasks.
+ * Never mixes unassigned group tasks into directTasks and never double counts tasks assigned to both.
+ */
+export function partitionMyWorkTasks(
+  tasks: TaskItem[],
+  currentUserUid: string
+): MyWorkPartitionResult {
+  const activeTasks = tasks.filter((t) => !t.archivedAt && !isB1TestTask(t));
+  const directTasks = activeTasks.filter((t) =>
+    t.assigneeUids.includes(currentUserUid)
+  );
+  const collectiveOnlyTasks = activeTasks.filter(
+    (t) =>
+      t.assignees.includes('Nhóm') && !t.assigneeUids.includes(currentUserUid)
+  );
+  return { activeTasks, directTasks, collectiveOnlyTasks };
+}
+
+export interface MyWorkCoAssigneesInfo {
+  coAssigneeNames: string[];
+  unknownUidCount: number;
+  isCollectiveGroup: boolean;
+  hasExtraContext: boolean;
+}
+
+/**
+ * Resolves official project display names for other collaborators on a task,
+ * suppressing redundant self-attribution on single-owner personal cards.
+ */
+export function getMyWorkCoAssigneesInfo(
+  task: Pick<TaskItem, 'assigneeUids' | 'assignees'>,
+  currentUserUid: string,
+  members: Array<
+    Pick<ProjectMember, 'uid' | 'displayName' | 'email' | 'isActive'>
+  > = []
+): MyWorkCoAssigneesInfo {
+  const resolved = resolveTaskAssignees(task, members);
+  const coAssigneeNames = resolved.assignedMembers
+    .filter((m) => m.uid !== currentUserUid)
+    .map((m) => (m.isActive ? m.displayName : `${m.displayName} (Đã khóa)`));
+
+  return {
+    coAssigneeNames,
+    unknownUidCount: resolved.unknownUidCount,
+    isCollectiveGroup: resolved.isCollectiveGroup,
+    hasExtraContext:
+      coAssigneeNames.length > 0 || resolved.unknownUidCount > 0,
+  };
+}
+
