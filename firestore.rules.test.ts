@@ -34,16 +34,21 @@ import {
   canUserEditTask,
   computeParentProgress,
   exportTasksToCSV,
+  getCategoryVisualTheme,
   getDocumentDisplayLabel,
   getDocumentSourceLabel,
   getEffectiveCategory,
   getOfficialMemberDisplayName,
+  getStatusMeta,
+  getTaskDataReviewSummary,
   hasDuplicateUrlInGroup,
   isB1TestTask,
   isGenericDocumentLabel,
   isTaskManagerRole,
   MAX_LINKS_PER_GROUP,
   resolveTaskAssignees,
+  STATUS_META,
+  UNSET_STATUS_META,
   validateHttpUrl,
 } from './src/utils/taskHelpers';
 import { DocumentLink } from './src/types/project';
@@ -2569,6 +2574,135 @@ test('Case 12: Project Documents Center aggregation, review/duplicate classifica
   assert.equal(docsViewText.includes('summary.attentionNeededCount'), true);
   assert.equal(docsViewText.includes('Công việc chờ duyệt'), true);
 });
+
+test('Case 13: Task Visual System V2.0 separates Category, 5 Statuses + Thiếu trạng thái, and deduplicated Data Review warnings', () => {
+  // 1. 5 canonical workflow statuses retain exact palette & labels; null maps strictly to "Thiếu trạng thái"
+  assert.equal(STATUS_META['Đang làm'].bg, '#BDD7EE');
+  assert.equal(STATUS_META['Chờ duyệt'].bg, '#FFE699');
+  assert.equal(STATUS_META['Tạm dừng'].bg, '#FFC7CE');
+  assert.equal(STATUS_META['Hoàn thành'].bg, '#A9D08E');
+  assert.equal(STATUS_META['Chưa bắt đầu'].bg, '#EDEDED');
+  assert.equal(UNSET_STATUS_META.label, 'Thiếu trạng thái');
+  assert.equal(getStatusMeta(null).label, 'Thiếu trạng thái');
+  assert.equal(getStatusMeta('Chờ duyệt').label, 'Chờ duyệt');
+
+  // 2. Normal task produces zero warnings
+  const normalSummary = getTaskDataReviewSummary({
+    status: 'Đang làm',
+    reviewFlags: [],
+  });
+  assert.equal(normalSummary.isMissingStatus, false);
+  assert.deepEqual(normalSummary.dataFlags, []);
+  assert.equal(normalSummary.hasAnyIssue, false);
+
+  // 3. status === null + ['missing_status'] does NOT duplicate a second "Cần rà soát dữ liệu" warning
+  const missingStatusOnlySummary = getTaskDataReviewSummary({
+    status: null,
+    reviewFlags: ['missing_status'],
+  });
+  assert.equal(missingStatusOnlySummary.isMissingStatus, true);
+  assert.deepEqual(missingStatusOnlySummary.dataFlags, []);
+  assert.equal(missingStatusOnlySummary.hasAnyIssue, true);
+
+  // 4. status === null + multiple flags excludes 'missing_status' while consolidating remaining issues
+  const nullPlusMultipleFlags = getTaskDataReviewSummary({
+    status: null,
+    reviewFlags: ['missing_status', 'missing_assignee', 'missing_hyperlink_url', 'missing_assignee'],
+  });
+  assert.equal(nullPlusMultipleFlags.isMissingStatus, true);
+  assert.deepEqual(nullPlusMultipleFlags.dataFlags, [
+    'missing_assignee',
+    'missing_hyperlink_url',
+  ]);
+  assert.equal(nullPlusMultipleFlags.dataFlagLabels.length, 2);
+
+  // 5. "Chờ duyệt" + reviewFlags stays cleanly separated: status = Chờ duyệt, dataFlags = missing_assignee
+  const pendingApprovalWithFlag = getTaskDataReviewSummary({
+    status: 'Chờ duyệt',
+    reviewFlags: ['missing_assignee'],
+  });
+  assert.equal(pendingApprovalWithFlag.isMissingStatus, false);
+  assert.deepEqual(pendingApprovalWithFlag.dataFlags, ['missing_assignee']);
+  assert.equal(pendingApprovalWithFlag.hasAnyIssue, true);
+
+  // 6. Category visual themes never reuse the 5 status background colors
+  const statusBgs = new Set(Object.values(STATUS_META).map((m) => m.bg.toUpperCase()));
+  const catThemes = [
+    getCategoryVisualTheme('cat_outline', 'Đề cương'),
+    getCategoryVisualTheme('cat_foundation', 'Nền tảng & quy chuẩn'),
+    getCategoryVisualTheme('cat_research', 'Truy nguồn & nghiên cứu'),
+    getCategoryVisualTheme(null, 'Chưa phân hạng mục'),
+  ];
+  for (const theme of catThemes) {
+    assert.equal(statusBgs.has(theme.softBg.toUpperCase()), false);
+    assert.equal(statusBgs.has(theme.accent.toUpperCase()), false);
+  }
+
+  // 7. Parent/Child category inheritance check
+  const parentCat = getEffectiveCategory(SEED_TASKS[5], SEED_TASKS, sampleCategories); // task 4
+  const childInherited = getEffectiveCategory(SEED_TASKS[6], SEED_TASKS, sampleCategories); // task 4.1 inherits 4
+  assert.equal(parentCat.inherited, false);
+  assert.equal(childInherited.inherited, true);
+  assert.equal(childInherited.category, parentCat.category);
+
+  // 8. Component contracts across StatusBadge, CategoryChip, ReviewBadge, TasksView, TaskDetailDrawer, MyTasksView
+  const statusBadgeText = fs.readFileSync(
+    path.join(rootDir, 'src/components/StatusBadge.tsx'),
+    'utf8'
+  );
+  const categoryChipText = fs.readFileSync(
+    path.join(rootDir, 'src/components/CategoryChip.tsx'),
+    'utf8'
+  );
+  const reviewBadgeText = fs.readFileSync(
+    path.join(rootDir, 'src/components/ReviewBadge.tsx'),
+    'utf8'
+  );
+  const tasksViewText = fs.readFileSync(
+    path.join(rootDir, 'src/components/TasksView.tsx'),
+    'utf8'
+  );
+  const drawerText = fs.readFileSync(
+    path.join(rootDir, 'src/components/TaskDetailDrawer.tsx'),
+    'utf8'
+  );
+  const myTasksText = fs.readFileSync(
+    path.join(rootDir, 'src/components/MyTasksView.tsx'),
+    'utf8'
+  );
+
+  for (const icon of [
+    'PlayCircle',
+    'Clock3',
+    'PauseCircle',
+    'CheckCircle2',
+    'CircleDashed',
+    'AlertTriangle',
+  ]) {
+    assert.equal(statusBadgeText.includes(icon), true, `StatusBadge missing ${icon}`);
+  }
+  assert.equal(statusBadgeText.includes('border-dashed'), true);
+
+  assert.equal(categoryChipText.includes('Folder'), true);
+  assert.equal(categoryChipText.includes('getCategoryVisualTheme'), true);
+
+  assert.equal(reviewBadgeText.includes('AlertCircle'), true);
+  assert.equal(reviewBadgeText.includes('Cần rà soát dữ liệu'), true);
+  assert.equal(reviewBadgeText.includes('getTaskDataReviewSummary'), true);
+
+  assert.equal(tasksViewText.includes('<CategoryChip'), true);
+  assert.equal(tasksViewText.includes('<ReviewBadge'), true);
+  assert.equal(tasksViewText.includes('hasDistinctChildCategory'), true);
+  assert.equal(tasksViewText.includes('getTaskDataReviewSummary'), true);
+  assert.equal(tasksViewText.includes('TT: Thiếu trạng thái'), true);
+
+  assert.equal(drawerText.includes('<CategoryChip'), true);
+  assert.equal(drawerText.includes('<ReviewBadge'), true);
+  assert.equal(drawerText.includes('getTaskDataReviewSummary'), true);
+
+  assert.equal(myTasksText.includes('Thiếu trạng thái (chưa chọn)'), true);
+});
+
 
 
 

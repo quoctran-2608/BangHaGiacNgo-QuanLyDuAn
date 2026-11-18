@@ -360,7 +360,7 @@ export const MyTasksView: React.FC<MyTasksViewProps> = ({
                 className="w-full sm:w-auto px-3 py-2 text-xs font-medium bg-nga-thien/70 border border-nga-xam rounded-lg text-huyen-lam focus:outline-none focus:bg-white focus:ring-2 focus:ring-lam-tri-tue disabled:opacity-60 min-h-[42px]"
               >
                 {task.status === null && (
-                  <option value="">Cần rà soát (chưa có trạng thái)</option>
+                  <option value="">Thiếu trạng thái (chưa chọn)</option>
                 )}
                 {ALL_STATUSES.map((st) => {
                   const disabled = st === 'Hoàn thành' && !canApproveThisTask;

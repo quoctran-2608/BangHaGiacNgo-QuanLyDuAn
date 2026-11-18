@@ -26,15 +26,19 @@ import {
   canUserCreateSubtask,
   computeParentProgress,
   formatShortDate,
+  getCategoryVisualTheme,
   getDocumentDisplayLabel,
   getDocumentSourceLabel,
   getEffectiveCategory,
   getOfficialMemberDisplayName,
+  getTaskDataReviewSummary,
   isB1TestTask,
   isTaskOverdue,
   resolveTaskAssignees,
 } from '../utils/taskHelpers';
 import { isReplacedTemporaryAccountEmail } from '../utils/memberMapping';
+import { CategoryChip } from './CategoryChip';
+import { ReviewBadge } from './ReviewBadge';
 import { StatusBadge } from './StatusBadge';
 
 interface TasksViewProps {
@@ -50,53 +54,8 @@ interface TasksViewProps {
   onNavigateToDocuments?: () => void;
 }
 
-interface CategoryTheme {
-  accent: string;
-  text: string;
-  softBg: string;
-  softBorder: string;
-}
-
-function getCategoryVisualTheme(
-  categoryId: string | null,
-  categoryName: string,
-  fallbackColor?: string
-): CategoryTheme {
-  const nameKey = categoryName.trim().toLowerCase();
-  if (categoryId === 'cat_outline' || nameKey.includes('đề cương')) {
-    return {
-      accent: '#477FAE',
-      text: '#23527A',
-      softBg: '#F1F6FB',
-      softBorder: '#D2E2F0',
-    };
-  }
-  if (categoryId === 'cat_foundation' || nameKey.includes('nền tảng')) {
-    return {
-      accent: '#328578',
-      text: '#1D5950',
-      softBg: '#EFF7F5',
-      softBorder: '#C9E2DD',
-    };
-  }
-  if (categoryId === 'cat_research' || nameKey.includes('truy nguồn')) {
-    return {
-      accent: '#C9A14B',
-      text: '#7A5410',
-      softBg: '#FCF7EA',
-      softBorder: '#E7D5A7',
-    };
-  }
-  return {
-    accent: fallbackColor || '#477FAE',
-    text: '#14243F',
-    softBg: '#F5F2EA',
-    softBorder: '#E2DCCE',
-  };
-}
-
 const DESKTOP_GRID_COLS =
-  'lg:grid lg:grid-cols-[minmax(0,2.35fr)_122px_minmax(0,1fr)_minmax(0,1.1fr)_90px] xl:grid-cols-[minmax(0,1fr)_136px_174px_206px_98px] lg:items-center lg:gap-3 xl:gap-4';
+  'lg:grid lg:grid-cols-[minmax(0,2.3fr)_136px_minmax(0,1fr)_minmax(0,1.08fr)_90px] xl:grid-cols-[minmax(0,1fr)_148px_174px_206px_98px] lg:items-center lg:gap-3 xl:gap-4';
 
 export const TasksView: React.FC<TasksViewProps> = ({
   tasks,
@@ -200,7 +159,8 @@ export const TasksView: React.FC<TasksViewProps> = ({
   );
 
   const reviewFlagCount = useMemo(
-    () => visiblePool.filter((t) => t.reviewFlags.length > 0).length,
+    () =>
+      visiblePool.filter((t) => getTaskDataReviewSummary(t).hasAnyIssue).length,
     [visiblePool]
   );
 
@@ -276,7 +236,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
       }
     }
 
-    if (reviewOnly && task.reviewFlags.length === 0) {
+    if (reviewOnly && !getTaskDataReviewSummary(task).hasAnyIssue) {
       return false;
     }
 
@@ -522,7 +482,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
         key: 'status',
         label:
           statusFilter === '__unset__'
-            ? 'TT: Cần rà soát'
+            ? 'TT: Thiếu trạng thái'
             : `TT: ${statusFilter}`,
         toneClass:
           'bg-lam-sang-soft border-lam-sang/40 text-lam-sang-ink hover:bg-lam-sang/15',
@@ -1059,7 +1019,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                           {st}
                         </option>
                       ))}
-                      <option value="__unset__">Chưa có trạng thái</option>
+                      <option value="__unset__">Thiếu trạng thái</option>
                     </select>
                   </div>
 
@@ -1304,7 +1264,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                 {st}
               </option>
             ))}
-            <option value="__unset__">Chưa có trạng thái (Cần rà soát)</option>
+            <option value="__unset__">Thiếu trạng thái (chưa chọn)</option>
           </select>
 
           <select
@@ -1547,90 +1507,65 @@ export const TasksView: React.FC<TasksViewProps> = ({
                             </div>
                           </div>
 
-                          {/* Unified Unboxed Editorial Metadata Line */}
-                          <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs leading-5">
-                            <span
-                              style={{ color: catTheme.text }}
-                              className="inline-flex items-center gap-1.5 font-medium"
-                            >
-                              <span
-                                className="w-1.5 h-1.5 rounded-[2px] shrink-0"
-                                style={{ backgroundColor: catTheme.accent }}
-                                aria-hidden="true"
-                              />
-                              <span>
-                                {effCat.category || 'Chưa phân hạng mục'}
-                              </span>
-                            </span>
+                          {/* 2. Standardized Visual Hierarchy: CategoryChip -> ReviewBadge -> Progress -> Links */}
+                          <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-xs leading-5">
+                            <CategoryChip
+                              categoryId={effCat.categoryId}
+                              categoryName={
+                                effCat.category || 'Chưa phân hạng mục'
+                              }
+                              color={effCat.color}
+                            />
+
+                            <ReviewBadge task={parent} />
 
                             {totalChildrenInParent > 0 && (
-                              <>
+                              <span className="inline-flex items-center gap-1.5 text-[#5E697A]">
+                                <ListChecks
+                                  className="w-3.5 h-3.5 shrink-0"
+                                  style={{
+                                    color: isParentDone
+                                      ? '#328578'
+                                      : catTheme.accent,
+                                  }}
+                                />
                                 <span
-                                  className="text-[#D4CCB9] select-none"
-                                  aria-hidden="true"
+                                  className={`font-mono-tabular font-semibold ${
+                                    isParentDone
+                                      ? 'text-thanh-ngoc-ink'
+                                      : 'text-huyen-lam'
+                                  }`}
                                 >
-                                  ·
+                                  {progress.completed}/{progress.total}
                                 </span>
-                                <span className="inline-flex items-center gap-1.5 text-[#5E697A]">
-                                  <ListChecks
-                                    className="w-3.5 h-3.5 shrink-0"
+                                <span
+                                  aria-hidden="true"
+                                  className="w-11 h-1 rounded-full bg-[#EAE5D9] overflow-hidden inline-block"
+                                >
+                                  <span
+                                    className="block h-full rounded-full transition-all"
                                     style={{
-                                      color: isParentDone
+                                      width: `${progress.percentage}%`,
+                                      backgroundColor: isParentDone
                                         ? '#328578'
                                         : catTheme.accent,
                                     }}
                                   />
-                                  <span
-                                    className={`font-mono-tabular font-semibold ${
-                                      isParentDone
-                                        ? 'text-thanh-ngoc-ink'
-                                        : 'text-huyen-lam'
-                                    }`}
-                                  >
-                                    {progress.completed}/{progress.total}
-                                  </span>
-                                  <span
-                                    aria-hidden="true"
-                                    className="w-11 h-1 rounded-full bg-[#EAE5D9] overflow-hidden inline-block"
-                                  >
-                                    <span
-                                      className="block h-full rounded-full transition-all"
-                                      style={{
-                                        width: `${progress.percentage}%`,
-                                        backgroundColor: isParentDone
-                                          ? '#328578'
-                                          : catTheme.accent,
-                                      }}
-                                    />
-                                  </span>
                                 </span>
-                              </>
+                              </span>
                             )}
 
                             {parentLinksNode && (
                               <>
-                                <span
-                                  className="text-[#D4CCB9] select-none"
-                                  aria-hidden="true"
-                                >
-                                  ·
-                                </span>
+                                {totalChildrenInParent > 0 && (
+                                  <span
+                                    className="text-[#D4CCB9] select-none"
+                                    aria-hidden="true"
+                                  >
+                                    ·
+                                  </span>
+                                )}
                                 {parentLinksNode}
-                              </>
-                            )}
-
-                            {parent.reviewFlags.length > 0 && (
-                              <>
-                                <span
-                                  className="text-[#D4CCB9] select-none"
-                                  aria-hidden="true"
-                                >
-                                  ·
-                                </span>
-                                <span className="inline-flex items-center gap-1 font-medium text-minh-kim-ink">
-                                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                                  <span>Cần rà soát</span>
-                                </span>
                               </>
                             )}
 
@@ -1658,7 +1593,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                           status={parent.status}
                           compact
                           soft
-                          className="min-w-[108px]"
+                          className="min-w-[122px]"
                         />
                       </div>
 
@@ -1720,6 +1655,22 @@ export const TasksView: React.FC<TasksViewProps> = ({
                     <div className="border-t border-[#ECE7DA] bg-[#FAF8F2]/85 divide-y divide-[#EFEAE0] rounded-b-2xl">
                       {children.map((child) => {
                         const childLinksNode = renderTaskLinkActions(child);
+                        const effChildCat = getEffectiveCategory(
+                          child,
+                          visiblePool,
+                          categories
+                        );
+                        const hasDistinctChildCategory =
+                          !effChildCat.inherited &&
+                          Boolean(effChildCat.category) &&
+                          (effChildCat.categoryId
+                            ? effChildCat.categoryId !== effCat.categoryId
+                            : effChildCat.category.toLowerCase() !==
+                              effCat.category.toLowerCase());
+                        const childReviewSummary =
+                          getTaskDataReviewSummary(child);
+                        const hasChildDataReview =
+                          childReviewSummary.dataFlags.length > 0;
 
                         return (
                           <div
@@ -1786,31 +1737,23 @@ export const TasksView: React.FC<TasksViewProps> = ({
                                     </div>
                                   </div>
 
-                                  {(childLinksNode ||
-                                    child.reviewFlags.length > 0 ||
+                                  {(hasDistinctChildCategory ||
+                                    hasChildDataReview ||
+                                    childLinksNode ||
                                     child.archivedAt) && (
-                                    <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs leading-5">
-                                      {childLinksNode}
-                                      {child.reviewFlags.length > 0 && (
-                                        <>
-                                          {childLinksNode && (
-                                            <span
-                                              className="text-[#D4CCB9] select-none"
-                                              aria-hidden="true"
-                                            >
-                                              ·
-                                            </span>
-                                          )}
-                                          <span className="inline-flex items-center gap-1 font-medium text-minh-kim-ink">
-                                            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                                            <span>Cần rà soát</span>
-                                          </span>
-                                        </>
+                                    <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs leading-5">
+                                      {hasDistinctChildCategory && (
+                                        <CategoryChip
+                                          categoryId={effChildCat.categoryId}
+                                          categoryName={effChildCat.category}
+                                          color={effChildCat.color}
+                                        />
                                       )}
+                                      <ReviewBadge task={child} />
+                                      {childLinksNode}
                                       {child.archivedAt && (
                                         <>
-                                          {(childLinksNode ||
-                                            child.reviewFlags.length > 0) && (
+                                          {childLinksNode && (
                                             <span
                                               className="text-[#D4CCB9] select-none"
                                               aria-hidden="true"
@@ -1835,7 +1778,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                                   status={child.status}
                                   compact
                                   soft
-                                  className="min-w-[108px]"
+                                  className="min-w-[122px]"
                                 />
                               </div>
 

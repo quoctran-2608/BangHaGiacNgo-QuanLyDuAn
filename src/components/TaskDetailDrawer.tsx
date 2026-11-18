@@ -50,16 +50,18 @@ import {
   getDocumentSourceLabel,
   getEffectiveCategory,
   getOfficialMemberDisplayName,
+  getTaskDataReviewSummary,
   hasDuplicateUrlInGroup,
   isB1TestTask,
   isGenericDocumentLabel,
   isTaskOverdue,
   MAX_LINKS_PER_GROUP,
   resolveTaskAssignees,
-  REVIEW_FLAG_LABELS,
   validateHttpUrl,
 } from '../utils/taskHelpers';
 import { isReplacedTemporaryAccountEmail } from '../utils/memberMapping';
+import { CategoryChip } from './CategoryChip';
+import { ReviewBadge } from './ReviewBadge';
 import { StatusBadge } from './StatusBadge';
 
 interface TaskDetailDrawerProps {
@@ -1294,12 +1296,18 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
                 {task.title}
               </h2>
 
-              {/* 2. Code + Status */}
+              {/* 2. Code + Category + Status + Data Review */}
               <div className="flex flex-wrap items-center gap-2 pt-0.5">
                 <span className="font-mono-tabular text-xs font-bold px-2 py-0.5 rounded-md bg-huyen-lam text-kim-quang shrink-0">
                   {task.displayCode}
                 </span>
+                <CategoryChip
+                  categoryId={effCategory.categoryId}
+                  categoryName={effCategory.category || 'Chưa phân hạng mục'}
+                  color={effCategory.color}
+                />
                 <StatusBadge status={task.status} soft compact />
+                <ReviewBadge task={task} />
                 {isEditing && (
                   <span className="text-[11px] font-medium text-minh-kim-ink">
                     · Đang chỉnh sửa
@@ -1307,15 +1315,11 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
                 )}
               </div>
 
-              {/* 3. Unboxed Context Metadata: Assignee · Category · Due Date */}
+              {/* 3. Unboxed Context Metadata: Assignee · Due Date */}
               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-[#5E697A] pt-0.5">
                 <span className="text-huyen-lam font-medium">
                   {resolvedAssignees.displayText}
                 </span>
-                <span aria-hidden="true" className="text-[#B8B0A0]">
-                  ·
-                </span>
-                <span>{effCategory.category || 'Chưa phân hạng mục'}</span>
                 {task.dueDate && (
                   <>
                     <span aria-hidden="true" className="text-[#B8B0A0]">
@@ -1524,19 +1528,19 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
             </div>
           )}
 
-          {task.reviewFlags.length > 0 && (
-            <div className="px-3.5 py-2.5 rounded-xl bg-minh-kim-soft/80 border border-minh-kim-border/70 text-xs text-minh-kim-ink flex items-start gap-2">
-              <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
-              <div>
-                <span className="font-semibold">Cần rà soát: </span>
-                <span>
-                  {task.reviewFlags
-                    .map((flag) => REVIEW_FLAG_LABELS[flag])
-                    .join(' · ')}
-                </span>
+          {(() => {
+            const drawerReview = getTaskDataReviewSummary(task);
+            if (drawerReview.dataFlags.length === 0) return null;
+            return (
+              <div className="px-3.5 py-2.5 rounded-xl bg-[#FAF0EE] border border-[#DEB2AE] text-xs text-[#8B322F] flex items-start gap-2">
+                <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-semibold">Cần rà soát dữ liệu: </span>
+                  <span>{drawerReview.dataFlagLabels.join(' · ')}</span>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* TAB: CHI TIẾT — VIEW MODE */}
           {activeTab === 'info' && !isEditing && (

@@ -56,9 +56,9 @@ export const STATUS_META: Record<TaskStatus, StatusStyleMeta> = {
   },
 };
 
-/** Display-only badge style when source task.status is null */
+/** Display-only warning badge style when source task.status is null */
 export const UNSET_STATUS_META: StatusStyleMeta = {
-  label: 'Cần rà soát',
+  label: 'Thiếu trạng thái',
   bg: '#FFF8E7',
   text: '#7C4D00',
   border: '#D9A84E',
@@ -72,8 +72,96 @@ export function getStatusMeta(status: TaskStatus | null): StatusStyleMeta {
 export const REVIEW_FLAG_LABELS: Record<ReviewFlag, string> = {
   missing_assignee: 'Thiếu người phụ trách',
   missing_status: 'Thiếu trạng thái (null)',
-  missing_hyperlink_url: 'Thiếu URL Drive thực',
+  missing_hyperlink_url: 'Thiếu URL thực',
 };
+
+export interface TaskDataReviewSummary {
+  isMissingStatus: boolean;
+  /** Deduplicated data-quality flags not already represented by the Thiếu trạng thái badge */
+  dataFlags: ReviewFlag[];
+  /** Human-readable reasons for dataFlags */
+  dataFlagLabels: string[];
+  /** True when status is null or any reviewFlag is present */
+  hasAnyIssue: boolean;
+}
+
+/**
+ * Separates workflow status === null ("Thiếu trạng thái") from data-quality reviewFlags
+ * ("Cần rà soát dữ liệu") so the UI never duplicates two warning badges for one cause.
+ */
+export function getTaskDataReviewSummary(
+  task: Pick<TaskItem, 'status' | 'reviewFlags'>
+): TaskDataReviewSummary {
+  const isMissingStatus = task.status === null;
+  const rawFlags = Array.isArray(task.reviewFlags) ? task.reviewFlags : [];
+  const uniqueFlags = Array.from(new Set(rawFlags));
+  const dataFlags = uniqueFlags.filter(
+    (flag) => !(isMissingStatus && flag === 'missing_status')
+  );
+  const dataFlagLabels = dataFlags.map(
+    (flag) => REVIEW_FLAG_LABELS[flag] ?? flag
+  );
+
+  return {
+    isMissingStatus,
+    dataFlags,
+    dataFlagLabels,
+    hasAnyIssue: isMissingStatus || dataFlags.length > 0,
+  };
+}
+
+export interface CategoryVisualTheme {
+  accent: string;
+  text: string;
+  softBg: string;
+  softBorder: string;
+}
+
+export function getCategoryVisualTheme(
+  categoryId: string | null | undefined,
+  categoryName: string | null | undefined,
+  fallbackColor?: string
+): CategoryVisualTheme {
+  const nameKey = (categoryName ?? '').trim().toLowerCase();
+  if (categoryId === 'cat_outline' || nameKey.includes('đề cương')) {
+    return {
+      accent: '#477FAE',
+      text: '#23527A',
+      softBg: '#EFF6FB',
+      softBorder: '#C7DDF0',
+    };
+  }
+  if (categoryId === 'cat_foundation' || nameKey.includes('nền tảng')) {
+    return {
+      accent: '#328578',
+      text: '#1D5950',
+      softBg: '#ECF6F3',
+      softBorder: '#BEE0D8',
+    };
+  }
+  if (categoryId === 'cat_research' || nameKey.includes('truy nguồn')) {
+    return {
+      accent: '#C9A14B',
+      text: '#7A5410',
+      softBg: '#FCF7EA',
+      softBorder: '#E5D1A0',
+    };
+  }
+  if (!nameKey || nameKey === 'chưa phân hạng mục') {
+    return {
+      accent: '#8D95A3',
+      text: '#586272',
+      softBg: '#F4F1EA',
+      softBorder: '#DFD8CA',
+    };
+  }
+  return {
+    accent: fallbackColor || '#477FAE',
+    text: '#14243F',
+    softBg: '#F5F2EA',
+    softBorder: '#DFD8C8',
+  };
+}
 
 export function computeParentProgress(
   parentId: string,
