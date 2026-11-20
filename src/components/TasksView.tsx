@@ -101,10 +101,12 @@ export const TasksView: React.FC<TasksViewProps> = ({
   const filterBarRef = useRef<HTMLDivElement | null>(null);
   const columnHeaderRef = useRef<HTMLDivElement | null>(null);
   const stickyPopoverRef = useRef<HTMLDivElement | null>(null);
+  const mobileFilterBtnRef = useRef<HTMLButtonElement | null>(null);
   const [showStickyBar, setShowStickyBar] = useState(false);
   const [showStickyColumnHeader, setShowStickyColumnHeader] = useState(false);
   const [stickyTop, setStickyTop] = useState(0);
   const [stickyFilterOpen, setStickyFilterOpen] = useState(false);
+  const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const [openLinkMenu, setOpenLinkMenu] = useState<{
     taskId: string;
     group: 'reference' | 'result';
@@ -473,13 +475,29 @@ export const TasksView: React.FC<TasksViewProps> = ({
       window.removeEventListener('scroll', handleScrollOrResize);
       window.removeEventListener('resize', handleScrollOrResize);
     };
-  }, [filteredTree.length]);
+  }, [filteredTree.length, mobileFilterOpen]);
 
   useEffect(() => {
     if (!showStickyBar) {
       setStickyFilterOpen(false);
+    } else {
+      setMobileFilterOpen(false);
     }
   }, [showStickyBar]);
+
+  useEffect(() => {
+    if (!mobileFilterOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMobileFilterOpen(false);
+        mobileFilterBtnRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [mobileFilterOpen]);
 
   useEffect(() => {
     if (!stickyFilterOpen) return;
@@ -605,6 +623,8 @@ export const TasksView: React.FC<TasksViewProps> = ({
   ]);
 
   const activeDropdownFilterCount = activeFilterChips.length;
+  const activePanelFilterCount =
+    activeDropdownFilterCount + (reviewOnly ? 1 : 0);
 
   const renderAssigneeCell = (task: TaskItem) => {
     const resolved = resolveTaskAssignees(task, members);
@@ -1080,7 +1100,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
 
             {/* Quick Filter Popover anchored to sticky bar */}
             {stickyFilterOpen && (
-              <div className="absolute left-3 right-3 sm:left-6 sm:right-auto sm:w-[460px] top-full mt-1.5 bg-trang-nga border border-[#DFD8C8] rounded-2xl shadow-[0_14px_34px_-10px_rgba(20,36,63,0.16)] p-4 space-y-3 z-30">
+              <div className="absolute left-3 right-3 sm:left-6 sm:right-auto sm:w-[460px] top-full mt-1.5 max-h-[calc(100dvh-148px)] overflow-y-auto bg-trang-nga border border-[#DFD8C8] rounded-2xl shadow-[0_14px_34px_-10px_rgba(20,36,63,0.16)] p-4 space-y-3 z-30">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-semibold text-huyen-lam">
                     Lọc nhanh danh sách
@@ -1286,36 +1306,64 @@ export const TasksView: React.FC<TasksViewProps> = ({
         </div>
       </div>
 
-      {/* Luminous Warm Search & Filter Bar */}
+      {/* Luminous Warm Search & Filter Bar (Compact Mobile + Full Desktop) */}
       <div
         ref={filterBarRef}
-        className="bg-trang-nga border border-[#E5DFD2] rounded-2xl p-3 sm:p-4 space-y-3 shadow-[0_1px_3px_rgba(20,36,63,0.03)]"
+        className="bg-trang-nga border border-[#E5DFD2] rounded-2xl p-2.5 sm:p-4 shadow-[0_1px_3px_rgba(20,36,63,0.03)]"
       >
-        <div className="flex flex-col sm:flex-row sm:items-center gap-2.5">
-          <div className="relative flex-1 min-w-0">
-            <Search className="w-4 h-4 text-[#8A94A3] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Tìm theo mã, tên việc, người phụ trách, bước tiếp theo..."
-              aria-label="Tìm kiếm công việc"
-              className="w-full pl-10 pr-10 py-2 text-sm bg-[#FAF8F3] border border-[#E2DCD0] rounded-xl text-huyen-lam placeholder:text-[#8E96A3] focus:outline-none focus:ring-2 focus:ring-lam-sang/30 focus:border-lam-sang focus:bg-white min-h-[42px] transition-colors"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                aria-label="Xóa từ khóa tìm kiếm"
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 w-9 h-9 flex items-center justify-center rounded-lg text-[#7D8796] hover:text-huyen-lam hover:bg-[#EFEAE0] transition-colors"
-              >
-                <X className="w-4 h-4 shrink-0" />
-              </button>
-            )}
+        {/* Mobile (< sm) Compact Search + Filter Trigger + Expandable Panel */}
+        <div className="sm:hidden">
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1 min-w-0">
+              <Search className="w-4 h-4 text-[#8A94A3] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Tìm mã, tên, phụ trách..."
+                aria-label="Tìm kiếm công việc"
+                className="w-full pl-9 pr-9 py-1.5 text-sm bg-[#FAF8F3] border border-[#E2DCD0] rounded-xl text-huyen-lam placeholder:text-[#8E96A3] focus:outline-none focus:ring-2 focus:ring-lam-sang/30 focus:border-lam-sang focus:bg-white min-h-[40px] transition-colors"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  aria-label="Xóa từ khóa tìm kiếm"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-lg text-[#7D8796] hover:text-huyen-lam hover:bg-[#EFEAE0] transition-colors"
+                >
+                  <X className="w-4 h-4 shrink-0" />
+                </button>
+              )}
+            </div>
+
+            <button
+              ref={mobileFilterBtnRef}
+              type="button"
+              onClick={() => setMobileFilterOpen((v) => !v)}
+              aria-expanded={mobileFilterOpen}
+              aria-controls="mobile-tasks-filter-panel"
+              aria-label={
+                mobileFilterOpen ? 'Đóng bộ lọc danh sách' : 'Mở bộ lọc danh sách'
+              }
+              className={`inline-flex items-center justify-center gap-1.5 px-3 min-h-[40px] text-xs font-semibold rounded-xl border transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-lam-sang ${
+                mobileFilterOpen || activePanelFilterCount > 0
+                  ? 'bg-lam-sang-soft border-lam-sang/45 text-lam-sang-ink'
+                  : 'bg-white border-[#E2DCD0] text-huyen-lam hover:bg-[#FAF8F3]'
+              }`}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
+              <span>Lọc</span>
+              {activePanelFilterCount > 0 && (
+                <span className="font-mono-tabular text-[11px] font-bold px-1.5 py-0.5 rounded-md bg-lam-sang text-white leading-none">
+                  {activePanelFilterCount}
+                </span>
+              )}
+            </button>
           </div>
 
-          <div className="flex items-center justify-between sm:justify-end gap-2.5 shrink-0">
-            <div className="text-xs sm:text-[13px] text-[#606B7D] tabular-nums whitespace-nowrap px-1">
+          {/* Slim Status Strip: Count + Quick Review Toggle */}
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs text-[#606B7D] tabular-nums whitespace-nowrap">
               Đang xem{' '}
               <span
                 className={`font-mono-tabular font-semibold ${
@@ -1327,106 +1375,372 @@ export const TasksView: React.FC<TasksViewProps> = ({
               việc
             </div>
 
-            {hasActiveFilter && (
-              <button
-                type="button"
-                onClick={resetFilters}
-                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-chu-sa-soft border border-chu-sa-border text-chu-sa hover:bg-chu-sa hover:text-white transition-colors whitespace-nowrap min-h-[40px]"
-              >
-                <RotateCcw className="w-3.5 h-3.5 shrink-0" />
-                <span>Xóa lọc</span>
-              </button>
-            )}
+            <div className="inline-flex items-center gap-1.5">
+              {(reviewFlagCount > 0 || reviewOnly) && (
+                <button
+                  type="button"
+                  onClick={() => setReviewOnly((v) => !v)}
+                  aria-pressed={reviewOnly}
+                  className={`inline-flex items-center gap-1 px-2.5 min-h-[30px] text-[11.5px] font-medium rounded-lg border transition-colors whitespace-nowrap focus-visible:outline-2 focus-visible:outline-lam-sang ${
+                    reviewOnly
+                      ? 'bg-huyen-lam border-huyen-lam text-kim-quang font-semibold'
+                      : 'bg-white border-[#E2DCD0] text-huyen-lam hover:bg-[#FAF8F3]'
+                  }`}
+                >
+                  <AlertCircle
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      reviewOnly ? 'text-kim-quang' : 'text-minh-kim-ink'
+                    }`}
+                  />
+                  <span>
+                    Cần rà soát
+                    {reviewFlagCount > 0 ? ` (${reviewFlagCount})` : ''}
+                  </span>
+                </button>
+              )}
+
+              {hasActiveFilter && !mobileFilterOpen && (
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="inline-flex items-center gap-1 px-2 min-h-[30px] text-[11.5px] font-semibold rounded-lg bg-chu-sa-soft border border-chu-sa-border text-chu-sa hover:bg-chu-sa hover:text-white transition-colors whitespace-nowrap"
+                >
+                  <RotateCcw className="w-3 h-3 shrink-0" />
+                  <span>Xóa lọc</span>
+                </button>
+              )}
+            </div>
           </div>
+
+          {/* Compact Active Filter Summary Chips (when panel closed) */}
+          {!mobileFilterOpen && activeFilterChips.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              {activeFilterChips.map((chip) => (
+                <button
+                  key={chip.key}
+                  type="button"
+                  onClick={chip.onRemove}
+                  title={`Bỏ lọc: ${chip.label}`}
+                  className={`inline-flex items-center gap-1 min-h-[28px] px-2 text-[11px] font-medium rounded-md border transition-colors max-w-full ${chip.toneClass}`}
+                >
+                  <span className="truncate">{chip.label}</span>
+                  <X className="w-3 h-3 shrink-0" />
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Expandable Mobile Filter Panel (in-flow inside filterBarRef, never covered by sticky/bottom bar) */}
+          {mobileFilterOpen && (
+            <div
+              id="mobile-tasks-filter-panel"
+              className="mt-2.5 pt-3 border-t border-[#ECE6DA] space-y-2.5"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-huyen-lam">
+                  Bộ lọc danh sách
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileFilterOpen(false);
+                    mobileFilterBtnRef.current?.focus();
+                  }}
+                  aria-label="Đóng bộ lọc"
+                  className="inline-flex items-center gap-1 px-2 min-h-[30px] rounded-lg text-xs font-medium text-[#606B7D] hover:text-huyen-lam hover:bg-[#F3EFE6] transition-colors"
+                >
+                  <span>Đóng</span>
+                  <X className="w-3.5 h-3.5 shrink-0" />
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                <div>
+                  <label
+                    htmlFor="mobile-filter-status"
+                    className="block text-[11px] font-medium text-[#606B7D] mb-1"
+                  >
+                    Trạng thái
+                  </label>
+                  <select
+                    id="mobile-filter-status"
+                    aria-label="Lọc theo trạng thái"
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className={`w-full px-3 py-2 text-[13px] rounded-xl border focus:outline-none focus:ring-2 focus:ring-lam-sang/30 min-h-[40px] transition-colors ${
+                      statusFilter !== 'all'
+                        ? 'bg-lam-sang-soft border-lam-sang/40 text-huyen-lam font-medium'
+                        : 'bg-white border-[#E2DCD0] text-huyen-lam'
+                    }`}
+                  >
+                    <option value="all">Tất cả trạng thái</option>
+                    {ALL_STATUSES.map((st) => (
+                      <option key={st} value={st}>
+                        {st}
+                      </option>
+                    ))}
+                    <option value="__unset__">
+                      Thiếu trạng thái (chưa chọn)
+                    </option>
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="mobile-filter-category"
+                    className="block text-[11px] font-medium text-[#606B7D] mb-1"
+                  >
+                    Hạng mục
+                  </label>
+                  <select
+                    id="mobile-filter-category"
+                    aria-label="Lọc theo hạng mục"
+                    value={categoryFilter}
+                    onChange={(e) => setCategoryFilter(e.target.value)}
+                    className={`w-full px-3 py-2 text-[13px] rounded-xl border focus:outline-none focus:ring-2 focus:ring-lam-sang/30 min-h-[40px] transition-colors ${
+                      categoryFilter !== 'all'
+                        ? 'bg-thanh-ngoc-soft border-thanh-ngoc/40 text-huyen-lam font-medium'
+                        : 'bg-white border-[#E2DCD0] text-huyen-lam'
+                    }`}
+                  >
+                    <option value="all">Tất cả hạng mục</option>
+                    {sortedCategories.map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.name}
+                        {!cat.isActive ? ' (Ngừng dùng)' : ''}
+                      </option>
+                    ))}
+                    <option value="__uncategorized__">Chưa phân hạng mục</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="mobile-filter-assignee"
+                    className="block text-[11px] font-medium text-[#606B7D] mb-1"
+                  >
+                    Người phụ trách
+                  </label>
+                  <select
+                    id="mobile-filter-assignee"
+                    aria-label="Lọc theo người phụ trách"
+                    value={assigneeFilter}
+                    onChange={(e) => setAssigneeFilter(e.target.value)}
+                    className={`w-full px-3 py-2 text-[13px] rounded-xl border focus:outline-none focus:ring-2 focus:ring-lam-sang/30 min-h-[40px] transition-colors ${
+                      assigneeFilter !== 'all'
+                        ? 'bg-minh-kim-soft border-minh-kim-border text-huyen-lam font-medium'
+                        : 'bg-white border-[#E2DCD0] text-huyen-lam'
+                    }`}
+                  >
+                    <option value="all">Tất cả người phụ trách</option>
+                    <option value="__unassigned__">Chưa phân công</option>
+                    {hasCollectiveGroupTasks && (
+                      <option value="__collective__">Việc nhóm</option>
+                    )}
+                    {isManager && (
+                      <option value="__unlinked_uid__">
+                        Chưa liên kết tài khoản ({unlinkedUidCount})
+                      </option>
+                    )}
+                    {assigneeOptions.map((opt) => (
+                      <option key={opt.uid} value={opt.uid}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setReviewOnly((v) => !v)}
+                  aria-pressed={reviewOnly}
+                  className={`w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[13px] font-medium rounded-xl border transition-colors min-h-[40px] whitespace-nowrap ${
+                    reviewOnly
+                      ? 'bg-huyen-lam border-huyen-lam text-kim-quang font-semibold'
+                      : 'bg-white border-[#E2DCD0] text-huyen-lam hover:bg-[#FAF8F3]'
+                  }`}
+                >
+                  <AlertCircle
+                    className={`w-4 h-4 shrink-0 ${
+                      reviewOnly ? 'text-kim-quang' : 'text-minh-kim-ink'
+                    }`}
+                  />
+                  <span>
+                    Chỉ hiện việc cần rà soát
+                    {reviewFlagCount > 0 ? ` (${reviewFlagCount})` : ''}
+                  </span>
+                </button>
+              </div>
+
+              <div className="pt-2 border-t border-[#EFEAE0] flex items-center justify-between gap-2">
+                {hasActiveFilter ? (
+                  <button
+                    type="button"
+                    onClick={resetFilters}
+                    className="inline-flex items-center gap-1.5 px-2.5 min-h-[38px] text-xs font-semibold text-chu-sa hover:bg-chu-sa-soft rounded-lg transition-colors"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                    <span>Xóa bộ lọc</span>
+                  </button>
+                ) : (
+                  <span className="text-[11.5px] text-[#7D8796]">
+                    Đang hiện toàn bộ danh sách
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileFilterOpen(false);
+                    mobileFilterBtnRef.current?.focus();
+                  }}
+                  className="px-4 min-h-[38px] text-xs font-semibold bg-huyen-lam text-trang-nga rounded-xl hover:bg-lam-tri-tue transition-colors"
+                >
+                  Xong
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-          <select
-            aria-label="Lọc theo trạng thái"
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className={`w-full px-3 py-2 text-[13px] rounded-xl border focus:outline-none focus:ring-2 focus:ring-lam-sang/30 min-h-[42px] transition-colors ${
-              statusFilter !== 'all'
-                ? 'bg-lam-sang-soft border-lam-sang/40 text-huyen-lam font-medium'
-                : 'bg-white border-[#E2DCD0] text-huyen-lam hover:border-[#CFC7B7]'
-            }`}
-          >
-            <option value="all">Tất cả trạng thái</option>
-            {ALL_STATUSES.map((st) => (
-              <option key={st} value={st}>
-                {st}
-              </option>
-            ))}
-            <option value="__unset__">Thiếu trạng thái (chưa chọn)</option>
-          </select>
+        {/* Desktop & Tablet (sm+) Full Search & Filter Bar — preserved unchanged */}
+        <div className="hidden sm:block space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2.5">
+            <div className="relative flex-1 min-w-0">
+              <Search className="w-4 h-4 text-[#8A94A3] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Tìm theo mã, tên việc, người phụ trách, bước tiếp theo..."
+                aria-label="Tìm kiếm công việc"
+                className="w-full pl-10 pr-10 py-2 text-sm bg-[#FAF8F3] border border-[#E2DCD0] rounded-xl text-huyen-lam placeholder:text-[#8E96A3] focus:outline-none focus:ring-2 focus:ring-lam-sang/30 focus:border-lam-sang focus:bg-white min-h-[42px] transition-colors"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  aria-label="Xóa từ khóa tìm kiếm"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 w-9 h-9 flex items-center justify-center rounded-lg text-[#7D8796] hover:text-huyen-lam hover:bg-[#EFEAE0] transition-colors"
+                >
+                  <X className="w-4 h-4 shrink-0" />
+                </button>
+              )}
+            </div>
 
-          <select
-            aria-label="Lọc theo hạng mục"
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-            className={`w-full px-3 py-2 text-[13px] rounded-xl border focus:outline-none focus:ring-2 focus:ring-lam-sang/30 min-h-[42px] transition-colors ${
-              categoryFilter !== 'all'
-                ? 'bg-thanh-ngoc-soft border-thanh-ngoc/40 text-huyen-lam font-medium'
-                : 'bg-white border-[#E2DCD0] text-huyen-lam hover:border-[#CFC7B7]'
-            }`}
-          >
-            <option value="all">Tất cả hạng mục</option>
-            {sortedCategories.map((cat) => (
-              <option key={cat.id} value={cat.id}>
-                {cat.name}
-                {!cat.isActive ? ' (Ngừng dùng)' : ''}
-              </option>
-            ))}
-            <option value="__uncategorized__">Chưa phân hạng mục</option>
-          </select>
+            <div className="flex items-center justify-between sm:justify-end gap-2.5 shrink-0">
+              <div className="text-xs sm:text-[13px] text-[#606B7D] tabular-nums whitespace-nowrap px-1">
+                Đang xem{' '}
+                <span
+                  className={`font-mono-tabular font-semibold ${
+                    hasActiveFilter ? 'text-lam-sang-ink' : 'text-huyen-lam'
+                  }`}
+                >
+                  {visibleTotalCount}/{visiblePool.length}
+                </span>{' '}
+                việc
+              </div>
 
-          <select
-            aria-label="Lọc theo người phụ trách"
-            value={assigneeFilter}
-            onChange={(e) => setAssigneeFilter(e.target.value)}
-            className={`w-full px-3 py-2 text-[13px] rounded-xl border focus:outline-none focus:ring-2 focus:ring-lam-sang/30 min-h-[42px] transition-colors ${
-              assigneeFilter !== 'all'
-                ? 'bg-minh-kim-soft border-minh-kim-border text-huyen-lam font-medium'
-                : 'bg-white border-[#E2DCD0] text-huyen-lam hover:border-[#CFC7B7]'
-            }`}
-          >
-            <option value="all">Tất cả người phụ trách</option>
-            <option value="__unassigned__">Chưa phân công</option>
-            {hasCollectiveGroupTasks && (
-              <option value="__collective__">Việc nhóm</option>
-            )}
-            {isManager && (
-              <option value="__unlinked_uid__">
-                Chưa liên kết tài khoản ({unlinkedUidCount})
-              </option>
-            )}
-            {assigneeOptions.map((opt) => (
-              <option key={opt.uid} value={opt.uid}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+              {hasActiveFilter && (
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-chu-sa-soft border border-chu-sa-border text-chu-sa hover:bg-chu-sa hover:text-white transition-colors whitespace-nowrap min-h-[40px]"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                  <span>Xóa lọc</span>
+                </button>
+              )}
+            </div>
+          </div>
 
-          <button
-            type="button"
-            onClick={() => setReviewOnly((v) => !v)}
-            aria-pressed={reviewOnly}
-            className={`w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[13px] font-medium rounded-xl border transition-colors min-h-[42px] whitespace-nowrap ${
-              reviewOnly
-                ? 'bg-huyen-lam border-huyen-lam text-kim-quang font-semibold'
-                : 'bg-white border-[#E2DCD0] text-huyen-lam hover:bg-[#FAF8F3] hover:border-[#CFC7B7]'
-            }`}
-          >
-            <AlertCircle
-              className={`w-4 h-4 shrink-0 ${
-                reviewOnly ? 'text-kim-quang' : 'text-minh-kim-ink'
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+            <select
+              aria-label="Lọc theo trạng thái"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className={`w-full px-3 py-2 text-[13px] rounded-xl border focus:outline-none focus:ring-2 focus:ring-lam-sang/30 min-h-[42px] transition-colors ${
+                statusFilter !== 'all'
+                  ? 'bg-lam-sang-soft border-lam-sang/40 text-huyen-lam font-medium'
+                  : 'bg-white border-[#E2DCD0] text-huyen-lam hover:border-[#CFC7B7]'
               }`}
-            />
-            <span>
-              Cần rà soát
-              {reviewFlagCount > 0 ? ` (${reviewFlagCount})` : ''}
-            </span>
-          </button>
+            >
+              <option value="all">Tất cả trạng thái</option>
+              {ALL_STATUSES.map((st) => (
+                <option key={st} value={st}>
+                  {st}
+                </option>
+              ))}
+              <option value="__unset__">Thiếu trạng thái (chưa chọn)</option>
+            </select>
+
+            <select
+              aria-label="Lọc theo hạng mục"
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              className={`w-full px-3 py-2 text-[13px] rounded-xl border focus:outline-none focus:ring-2 focus:ring-lam-sang/30 min-h-[42px] transition-colors ${
+                categoryFilter !== 'all'
+                  ? 'bg-thanh-ngoc-soft border-thanh-ngoc/40 text-huyen-lam font-medium'
+                  : 'bg-white border-[#E2DCD0] text-huyen-lam hover:border-[#CFC7B7]'
+              }`}
+            >
+              <option value="all">Tất cả hạng mục</option>
+              {sortedCategories.map((cat) => (
+                <option key={cat.id} value={cat.id}>
+                  {cat.name}
+                  {!cat.isActive ? ' (Ngừng dùng)' : ''}
+                </option>
+              ))}
+              <option value="__uncategorized__">Chưa phân hạng mục</option>
+            </select>
+
+            <select
+              aria-label="Lọc theo người phụ trách"
+              value={assigneeFilter}
+              onChange={(e) => setAssigneeFilter(e.target.value)}
+              className={`w-full px-3 py-2 text-[13px] rounded-xl border focus:outline-none focus:ring-2 focus:ring-lam-sang/30 min-h-[42px] transition-colors ${
+                assigneeFilter !== 'all'
+                  ? 'bg-minh-kim-soft border-minh-kim-border text-huyen-lam font-medium'
+                  : 'bg-white border-[#E2DCD0] text-huyen-lam hover:border-[#CFC7B7]'
+              }`}
+            >
+              <option value="all">Tất cả người phụ trách</option>
+              <option value="__unassigned__">Chưa phân công</option>
+              {hasCollectiveGroupTasks && (
+                <option value="__collective__">Việc nhóm</option>
+              )}
+              {isManager && (
+                <option value="__unlinked_uid__">
+                  Chưa liên kết tài khoản ({unlinkedUidCount})
+                </option>
+              )}
+              {assigneeOptions.map((opt) => (
+                <option key={opt.uid} value={opt.uid}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="button"
+              onClick={() => setReviewOnly((v) => !v)}
+              aria-pressed={reviewOnly}
+              className={`w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[13px] font-medium rounded-xl border transition-colors min-h-[42px] whitespace-nowrap ${
+                reviewOnly
+                  ? 'bg-huyen-lam border-huyen-lam text-kim-quang font-semibold'
+                  : 'bg-white border-[#E2DCD0] text-huyen-lam hover:bg-[#FAF8F3] hover:border-[#CFC7B7]'
+              }`}
+            >
+              <AlertCircle
+                className={`w-4 h-4 shrink-0 ${
+                  reviewOnly ? 'text-kim-quang' : 'text-minh-kim-ink'
+                }`}
+              />
+              <span>
+                Cần rà soát
+                {reviewFlagCount > 0 ? ` (${reviewFlagCount})` : ''}
+              </span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1521,14 +1835,18 @@ export const TasksView: React.FC<TasksViewProps> = ({
                 <section
                   key={parent.id}
                   aria-label={`Nhóm công việc ${parent.displayCode}: ${parent.title}`}
-                  className={`relative bg-trang-nga border border-[#E5DFD2] hover:border-[#CFC6B4] rounded-2xl shadow-[0_1px_3px_rgba(20,36,63,0.03),0_6px_18px_-14px_rgba(20,36,63,0.12)] transition-[border-color,box-shadow] duration-150 ${
-                    hasOpenPopoverInGroup ? 'z-20' : ''
-                  }`}
+                  className={`relative bg-trang-nga border rounded-2xl shadow-[0_1px_3px_rgba(20,36,63,0.03),0_6px_18px_-14px_rgba(20,36,63,0.12)] transition-[border-color,box-shadow] duration-150 ${
+                    isExpanded
+                      ? 'border-[#D5CBB7]'
+                      : 'border-[#E5DFD2] hover:border-[#CFC6B4]'
+                  } ${hasOpenPopoverInGroup ? 'z-20' : ''}`}
                 >
                   {/* Subtle Top Category Hairline for Editorial Rhythm across 9 Groups */}
                   <div
                     aria-hidden="true"
-                    className="h-[2.5px] w-full rounded-t-[15px]"
+                    className={`h-[2.5px] w-full rounded-t-[15px] transition-opacity ${
+                      isExpanded ? 'opacity-100' : 'opacity-80'
+                    }`}
                     style={{
                       background: `linear-gradient(90deg, ${catTheme.accent} 0%, ${catTheme.accent}4D 42%, transparent 88%)`,
                     }}
@@ -1537,12 +1855,14 @@ export const TasksView: React.FC<TasksViewProps> = ({
                   {/* Parent Row */}
                   <div
                     onClick={handleParentPrimaryAction}
-                    className={`px-3.5 py-3 sm:px-5 sm:py-4 bg-trang-nga hover:bg-[#FCFBF8] transition-colors cursor-pointer ${
-                      isExpanded ? '' : 'rounded-b-2xl'
+                    className={`px-3.5 py-3 sm:px-5 sm:py-4 transition-colors cursor-pointer ${
+                      isExpanded
+                        ? 'bg-[#FCFBF6] hover:bg-[#FAF8F2]'
+                        : 'bg-trang-nga hover:bg-[#FCFBF8] rounded-b-2xl'
                     }`}
                   >
                     <div className={DESKTOP_GRID_COLS}>
-                      {/* Column 1: Chevron (sm+) + Quiet Archival Code + Dominant Editorial Title + Clean Metadata */}
+                      {/* Column 1: Chevron (sm+) + Quiet Archival Code + Dominant Editorial Title + Fixed Chi tiết + Clean Metadata */}
                       <div className="flex items-start sm:gap-2.5 min-w-0">
                         <div
                           className={`shrink-0 pt-0.5 ${
@@ -1581,9 +1901,9 @@ export const TasksView: React.FC<TasksViewProps> = ({
                         </div>
 
                         <div className="flex-1 min-w-0">
-                          {/* Mobile (< sm) Compact Top Strip: Inline Chevron (40px invisible touch target) + Code Seal <-> StatusBadge */}
-                          <div className="flex sm:hidden items-center justify-between gap-2 mb-1">
-                            <div className="inline-flex items-center gap-1.5 min-w-0">
+                          {/* Mobile (< sm) Fixed Action Header: Chevron + Code <-> Chi tiết + StatusBadge */}
+                          <div className="flex sm:hidden flex-wrap items-center justify-between gap-x-2 gap-y-1.5 mb-1.5">
+                            <div className="inline-flex items-center gap-1.5 shrink-0">
                               {hasChildren && (
                                 <button
                                   type="button"
@@ -1623,7 +1943,27 @@ export const TasksView: React.FC<TasksViewProps> = ({
                                 {parent.displayCode}
                               </span>
                             </div>
-                            <StatusBadge status={parent.status} compact soft />
+
+                            <div className="inline-flex items-center gap-1.5 shrink-0 ml-auto">
+                              {hasChildren && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onSelectTask(parent.id);
+                                  }}
+                                  aria-label={`Mở chi tiết công việc ${parent.displayCode}: ${parent.title}`}
+                                  className="relative inline-flex items-center gap-1 min-h-[28px] px-2 py-0.5 rounded-lg border border-[#DCD4C4] bg-white text-[11.5px] font-semibold text-huyen-lam hover:bg-huyen-lam hover:text-trang-nga hover:border-huyen-lam focus-visible:outline-2 focus-visible:outline-lam-sang transition-colors whitespace-nowrap shrink-0 before:content-[''] before:absolute before:-inset-y-1.5 before:-inset-x-0.5"
+                                >
+                                  <PanelRightOpen
+                                    className="w-3.5 h-3.5 shrink-0"
+                                    aria-hidden="true"
+                                  />
+                                  <span>Chi tiết</span>
+                                </button>
+                              )}
+                              <StatusBadge status={parent.status} compact soft />
+                            </div>
                           </div>
 
                           <div className="flex items-start justify-between gap-2.5">
@@ -1656,13 +1996,32 @@ export const TasksView: React.FC<TasksViewProps> = ({
                               </div>
                             </button>
 
-                            {/* Tablet (sm..md) StatusBadge */}
-                            <div className="hidden sm:block lg:hidden shrink-0 pt-0.5">
-                              <StatusBadge status={parent.status} compact soft />
+                            {/* Tablet & Desktop (sm+) Fixed Secondary Action Slot: Chi tiết + Tablet StatusBadge */}
+                            <div className="hidden sm:flex items-center gap-2 shrink-0 pt-0.5">
+                              {hasChildren && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onSelectTask(parent.id);
+                                  }}
+                                  aria-label={`Mở chi tiết công việc ${parent.displayCode}: ${parent.title}`}
+                                  className="inline-flex items-center gap-1 min-h-[28px] px-2.5 py-0.5 rounded-lg border border-[#DCD4C4] bg-white text-[11.5px] font-semibold text-huyen-lam hover:bg-huyen-lam hover:text-trang-nga hover:border-huyen-lam focus-visible:outline-2 focus-visible:outline-lam-sang transition-colors whitespace-nowrap shrink-0"
+                                >
+                                  <PanelRightOpen
+                                    className="w-3.5 h-3.5 shrink-0"
+                                    aria-hidden="true"
+                                  />
+                                  <span>Chi tiết</span>
+                                </button>
+                              )}
+                              <div className="lg:hidden">
+                                <StatusBadge status={parent.status} compact soft />
+                              </div>
                             </div>
                           </div>
 
-                          {/* 2. Standardized Visual Hierarchy: Flexible single-flow wrap for Category, Review, Subtasks, Progress, Attention, Chi tiết & Links */}
+                          {/* 2. Standardized Visual Hierarchy: Category -> Review -> Subtasks Discovery & Progress -> Collapsed Child Attention -> Links */}
                           <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 sm:gap-x-2.5 text-xs leading-5">
                             <CategoryChip
                               categoryId={effCat.categoryId}
@@ -1689,7 +2048,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                                       ? `Thu gọn ${subtaskCountLabel} của nhóm ${parent.displayCode}`
                                       : `Xem ${subtaskCountLabel} của nhóm ${parent.displayCode}`
                                   }
-                                  className={`inline-flex items-center gap-1.5 min-h-[32px] sm:min-h-[26px] px-2.5 py-0.5 rounded-lg border text-[11.5px] font-semibold transition-colors whitespace-nowrap focus-visible:outline-2 focus-visible:outline-lam-sang ${
+                                  className={`inline-flex items-center gap-1.5 min-h-[30px] sm:min-h-[26px] px-2.5 py-0.5 rounded-lg border text-[11.5px] font-semibold transition-colors whitespace-nowrap focus-visible:outline-2 focus-visible:outline-lam-sang ${
                                     isExpanded
                                       ? 'bg-thanh-ngoc-soft border-thanh-ngoc/45 text-thanh-ngoc-ink'
                                       : 'bg-thanh-ngoc-soft/75 border-thanh-ngoc/30 text-thanh-ngoc-ink hover:bg-thanh-ngoc-soft hover:border-thanh-ngoc/50'
@@ -1785,22 +2144,6 @@ export const TasksView: React.FC<TasksViewProps> = ({
                                       )}
                                     </span>
                                   )}
-
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onSelectTask(parent.id);
-                                  }}
-                                  aria-label={`Mở chi tiết công việc ${parent.displayCode}: ${parent.title}`}
-                                  className="inline-flex items-center gap-1 min-h-[32px] sm:min-h-[26px] px-2.5 py-0.5 rounded-lg border border-[#DCD4C4] bg-white text-[11.5px] font-semibold text-huyen-lam hover:bg-huyen-lam hover:text-trang-nga hover:border-huyen-lam focus-visible:outline-2 focus-visible:outline-lam-sang transition-colors whitespace-nowrap shrink-0"
-                                >
-                                  <PanelRightOpen
-                                    className="w-3.5 h-3.5 shrink-0"
-                                    aria-hidden="true"
-                                  />
-                                  <span>Chi tiết</span>
-                                </button>
                               </>
                             )}
 

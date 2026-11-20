@@ -3400,6 +3400,27 @@ test('Case 16: Smart Parent-Child Navigation V2.0 — child attention summary, f
     ),
     true
   );
+
+  // 6. Task List UX Polish V2.2 contracts
+  // Fixed Chi tiết button in mobile header bar and sm+ title action slot (separate from metadata/warnings row)
+  assert.equal(
+    freshTasksView.includes("Mobile (< sm) Fixed Action Header: Chevron + Code <-> Chi tiết + StatusBadge"),
+    true
+  );
+  assert.equal(
+    freshTasksView.includes("Tablet & Desktop (sm+) Fixed Secondary Action Slot: Chi tiết + Tablet StatusBadge"),
+    true
+  );
+  // Compact mobile search + collapsible filter panel with accessibility & sticky non-overlap
+  assert.equal(freshTasksView.includes('id="mobile-tasks-filter-panel"'), true);
+  assert.equal(freshTasksView.includes('aria-controls="mobile-tasks-filter-panel"'), true);
+  assert.equal(freshTasksView.includes('aria-expanded={mobileFilterOpen}'), true);
+  assert.equal(freshTasksView.includes('activePanelFilterCount'), true);
+  assert.equal(freshTasksView.includes('setMobileFilterOpen(false);'), true);
+  // Sticky quick-filter popover constrained above mobile bottom bar
+  assert.equal(freshTasksView.includes('max-h-[calc(100dvh-148px)] overflow-y-auto'), true);
+  // Expanded parent header subtle visual distinction
+  assert.equal(freshTasksView.includes("bg-[#FCFBF6] hover:bg-[#FAF8F2]"), true);
 });
 
 
