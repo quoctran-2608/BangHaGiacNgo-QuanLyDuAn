@@ -3369,6 +3369,37 @@ test('Case 16: Smart Parent-Child Navigation V2.0 — child attention summary, f
   const editModeChunk = freshDrawer.slice(editModeStart);
   assert.equal(editModeChunk.includes('aria-label="Chuyển nhanh việc con"'), true);
   assert.equal(editModeChunk.includes("type: 'select_task'"), true);
+
+  // 5. Mobile Hierarchy Refinement V2.1 contracts on TasksView
+  // No dedicated mobile chevron column pushing parent content right
+  assert.equal(
+    freshTasksView.includes("hidden sm:flex sm:w-9 sm:items-start sm:justify-center"),
+    true
+  );
+  // Compact inline mobile chevron with expanded 44px invisible touch area
+  assert.equal(freshTasksView.includes("before:-inset-2.5"), true);
+  // Parent mobile meta does not double-indent on < sm
+  assert.equal(freshTasksView.includes("hasChildren ? 'sm:pl-11' : ''"), true);
+  // Child row uses 12px mobile indent (pl-[26px] vs parent px-3.5 = 14px) + subtle mobile vertical rail
+  assert.equal(
+    freshTasksView.includes("pl-[26px] pr-3.5 py-2.5 sm:px-5 sm:py-3"),
+    true
+  );
+  assert.equal(
+    freshTasksView.includes("sm:hidden absolute left-[14px] top-0 bottom-3"),
+    true
+  );
+  // Child mobile meta avoids double-indentation (pl-0 on < sm, sm:pl-14 on sm..md)
+  assert.equal(freshTasksView.includes("lg:hidden pl-0 sm:pl-14 mt-1.5"), true);
+  // Child title keeps code + title together with graceful StatusBadge wrap
+  assert.equal(freshTasksView.includes("min-w-[185px] sm:min-w-0"), true);
+  // Desktop grid columns untouched
+  assert.equal(
+    freshTasksView.includes(
+      "lg:grid lg:grid-cols-[minmax(0,2.3fr)_136px_minmax(0,1fr)_minmax(0,1.08fr)_90px] xl:grid-cols-[minmax(0,1fr)_148px_174px_206px_98px] lg:items-center lg:gap-3 xl:gap-4"
+    ),
+    true
+  );
 });
 
 

@@ -1537,17 +1537,17 @@ export const TasksView: React.FC<TasksViewProps> = ({
                   {/* Parent Row */}
                   <div
                     onClick={handleParentPrimaryAction}
-                    className={`px-3.5 py-3.5 sm:px-5 sm:py-4 bg-trang-nga hover:bg-[#FCFBF8] transition-colors cursor-pointer ${
+                    className={`px-3.5 py-3 sm:px-5 sm:py-4 bg-trang-nga hover:bg-[#FCFBF8] transition-colors cursor-pointer ${
                       isExpanded ? '' : 'rounded-b-2xl'
                     }`}
                   >
                     <div className={DESKTOP_GRID_COLS}>
-                      {/* Column 1: Chevron + Quiet Archival Code + Dominant Editorial Title + Clean Metadata */}
-                      <div className="flex items-start gap-2.5 min-w-0">
+                      {/* Column 1: Chevron (sm+) + Quiet Archival Code + Dominant Editorial Title + Clean Metadata */}
+                      <div className="flex items-start sm:gap-2.5 min-w-0">
                         <div
                           className={`shrink-0 pt-0.5 ${
                             hasChildren
-                              ? 'w-9 flex items-start justify-center'
+                              ? 'hidden sm:flex sm:w-9 sm:items-start sm:justify-center'
                               : 'hidden lg:block lg:w-9'
                           }`}
                         >
@@ -1581,18 +1581,48 @@ export const TasksView: React.FC<TasksViewProps> = ({
                         </div>
 
                         <div className="flex-1 min-w-0">
-                          {/* Mobile (< sm) Top Row: Quiet Code Seal + Soft StatusBadge */}
-                          <div className="flex sm:hidden items-center justify-between gap-2 mb-1.5">
-                            <span
-                              style={{
-                                backgroundColor: catTheme.softBg,
-                                color: catTheme.text,
-                                borderColor: `${catTheme.accent}33`,
-                              }}
-                              className="font-mono-tabular text-[11.5px] font-bold min-w-[28px] h-6 px-2 inline-flex items-center justify-center rounded-md border shrink-0"
-                            >
-                              {parent.displayCode}
-                            </span>
+                          {/* Mobile (< sm) Compact Top Strip: Inline Chevron (40px invisible touch target) + Code Seal <-> StatusBadge */}
+                          <div className="flex sm:hidden items-center justify-between gap-2 mb-1">
+                            <div className="inline-flex items-center gap-1.5 min-w-0">
+                              {hasChildren && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleParent(parent.id, isExpanded);
+                                  }}
+                                  aria-expanded={isExpanded}
+                                  aria-controls={childrenRegionId}
+                                  aria-label={
+                                    isExpanded
+                                      ? `Thu gọn ${subtaskCountLabel} của ${parent.displayCode}`
+                                      : `Mở rộng ${subtaskCountLabel} của ${parent.displayCode}`
+                                  }
+                                  className={`relative -ml-1 w-6 h-6 inline-flex items-center justify-center rounded-md transition-colors focus-visible:outline-2 focus-visible:outline-lam-sang before:content-[''] before:absolute before:-inset-2.5 ${
+                                    isExpanded
+                                      ? 'text-thanh-ngoc-ink bg-thanh-ngoc-soft/80'
+                                      : 'text-[#5E697A] hover:bg-[#F3EFE6] hover:text-huyen-lam'
+                                  }`}
+                                >
+                                  <ChevronRight
+                                    className={`w-4 h-4 shrink-0 transition-transform duration-150 ${
+                                      isExpanded ? 'rotate-90' : ''
+                                    }`}
+                                    aria-hidden="true"
+                                  />
+                                </button>
+                              )}
+                              <span
+                                style={{
+                                  backgroundColor: catTheme.softBg,
+                                  color: catTheme.text,
+                                  borderColor: `${catTheme.accent}33`,
+                                }}
+                                className="font-mono-tabular text-[11px] font-bold min-w-[26px] h-[22px] px-1.5 inline-flex items-center justify-center rounded-md border shrink-0"
+                              >
+                                {parent.displayCode}
+                              </span>
+                            </div>
                             <StatusBadge status={parent.status} compact soft />
                           </div>
 
@@ -1620,7 +1650,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                                 >
                                   {parent.displayCode}
                                 </span>
-                                <span className="text-[15.5px] sm:text-[16px] font-semibold tracking-[-0.01em] text-huyen-lam group-hover:text-lam-tri-tue group-hover:underline decoration-minh-kim/75 underline-offset-4 leading-[1.42] break-words transition-colors">
+                                <span className="text-[15px] sm:text-[16px] font-semibold tracking-[-0.01em] text-huyen-lam group-hover:text-lam-tri-tue group-hover:underline decoration-minh-kim/75 underline-offset-4 leading-[1.38] sm:leading-[1.42] break-words transition-colors">
                                   {parent.title}
                                 </span>
                               </div>
@@ -1632,8 +1662,8 @@ export const TasksView: React.FC<TasksViewProps> = ({
                             </div>
                           </div>
 
-                          {/* 2. Standardized Visual Hierarchy: CategoryChip -> ReviewBadge -> Prominent Subtask Cluster & Chi tiết -> Links */}
-                          <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-xs leading-5">
+                          {/* 2. Standardized Visual Hierarchy: Flexible single-flow wrap for Category, Review, Subtasks, Progress, Attention, Chi tiết & Links */}
+                          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 sm:gap-x-2.5 text-xs leading-5">
                             <CategoryChip
                               categoryId={effCat.categoryId}
                               categoryName={
@@ -1645,7 +1675,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                             <ReviewBadge task={parent} />
 
                             {hasChildren && (
-                              <div className="inline-flex flex-wrap items-center gap-1.5 sm:gap-2">
+                              <>
                                 <button
                                   type="button"
                                   onClick={(e) => {
@@ -1700,7 +1730,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                                   </span>
                                   <span
                                     aria-hidden="true"
-                                    className="w-12 h-1.5 rounded-full bg-[#EAE5D9] overflow-hidden inline-block"
+                                    className="w-10 sm:w-12 h-1.5 rounded-full bg-[#EAE5D9] overflow-hidden inline-block"
                                   >
                                     <span
                                       className="block h-full rounded-full transition-all"
@@ -1771,7 +1801,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                                   />
                                   <span>Chi tiết</span>
                                 </button>
-                              </div>
+                              </>
                             )}
 
                             {!hasChildren && totalChildrenInParent > 0 && (
@@ -1856,10 +1886,10 @@ export const TasksView: React.FC<TasksViewProps> = ({
                       </div>
                     </div>
 
-                    {/* Mobile (< lg) Parent Meta */}
+                    {/* Mobile (< lg) Parent Meta — aligned cleanly with parent title on < sm */}
                     <div
                       className={`lg:hidden mt-2.5 pt-2 border-t border-[#EFEAE0] space-y-1.5 ${
-                        hasChildren ? 'pl-11' : ''
+                        hasChildren ? 'sm:pl-11' : ''
                       }`}
                     >
                       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
@@ -1884,15 +1914,23 @@ export const TasksView: React.FC<TasksViewProps> = ({
                     </div>
                   </div>
 
-                  {/* Nested Child Rows (Warm Linen Well, Subtle Tree Lineage Rail) */}
+                  {/* Nested Child Rows (Warm Linen Well, Subtle Tree Lineage Rail, 12px Mobile Indent) */}
                   {isExpanded && (
                     <div
                       id={childrenRegionId}
                       className="relative border-t border-[#ECE7DA] bg-[#FAF8F3] divide-y divide-[#EFEAE0] rounded-b-2xl"
                     >
+                      {/* Mobile (< sm) slim vertical hierarchy rail aligned to parent left edge */}
                       <div
                         aria-hidden="true"
-                        className="hidden sm:block absolute left-[38px] top-0 bottom-4 w-px bg-[#DED7C7] pointer-events-none"
+                        className="sm:hidden absolute left-[14px] top-0 bottom-3 w-[1.5px] rounded-full pointer-events-none"
+                        style={{ backgroundColor: `${catTheme.accent}59` }}
+                      />
+                      {/* Tablet/Desktop (sm+) vertical hierarchy rail */}
+                      <div
+                        aria-hidden="true"
+                        className="hidden sm:block absolute left-[38px] top-0 bottom-4 w-px pointer-events-none"
+                        style={{ backgroundColor: `${catTheme.accent}45` }}
                       />
                       {children.map((child) => {
                         const childLinksNode = renderTaskLinkActions(child);
@@ -1917,12 +1955,12 @@ export const TasksView: React.FC<TasksViewProps> = ({
                           <div
                             key={child.id}
                             onClick={() => onSelectTask(child.id)}
-                            className="px-3.5 py-2.5 sm:px-5 sm:py-3 hover:bg-trang-nga transition-colors cursor-pointer last:rounded-b-2xl"
+                            className="pl-[26px] pr-3.5 py-2.5 sm:px-5 sm:py-3 hover:bg-trang-nga transition-colors cursor-pointer last:rounded-b-2xl"
                           >
                             <div className={DESKTOP_GRID_COLS}>
-                              {/* Column 1: Indented Tree Connector + Clean Code + Readable Child Title */}
-                              <div className="flex items-start gap-2.5 min-w-0">
-                                <div className="shrink-0 w-9 sm:w-12 flex items-start justify-end pr-0.5 pt-1">
+                              {/* Column 1: Subtle Tree Connector + Clean Code + Readable Child Title */}
+                              <div className="flex items-start sm:gap-2.5 min-w-0">
+                                <div className="hidden sm:flex shrink-0 sm:w-12 items-start justify-end pr-0.5 pt-1">
                                   <CornerDownRight
                                     className="w-3.5 h-3.5 shrink-0 opacity-65"
                                     style={{ color: catTheme.accent }}
@@ -1931,45 +1969,35 @@ export const TasksView: React.FC<TasksViewProps> = ({
                                 </div>
 
                                 <div className="flex-1 min-w-0">
-                                  {/* Mobile (< sm) Top Strip: Child Code + Soft Status */}
-                                  <div className="flex sm:hidden items-center justify-between gap-2 mb-1">
-                                    <span
-                                      style={{ color: catTheme.text }}
-                                      className="font-mono-tabular text-[11.5px] font-semibold opacity-90 shrink-0"
-                                    >
-                                      {child.displayCode}
-                                    </span>
-                                    <StatusBadge
-                                      status={child.status}
-                                      compact
-                                      soft
-                                    />
-                                  </div>
-
-                                  <div className="flex items-start justify-between gap-2.5">
+                                  <div className="flex flex-wrap sm:flex-nowrap items-start justify-between gap-x-2 gap-y-1.5">
                                     <button
                                       type="button"
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         onSelectTask(child.id);
                                       }}
-                                      className="text-left flex-1 min-w-0 group focus-visible:outline-2 focus-visible:outline-lam-sang rounded-sm"
+                                      className="text-left flex-1 min-w-[185px] sm:min-w-0 group focus-visible:outline-2 focus-visible:outline-lam-sang rounded-sm"
                                     >
-                                      <div className="flex items-baseline gap-2">
+                                      <div className="sm:flex sm:items-baseline sm:gap-2 leading-[1.42]">
+                                        <CornerDownRight
+                                          className="sm:hidden inline-block w-3 h-3 mr-1 -mt-0.5 shrink-0 opacity-75 align-middle"
+                                          style={{ color: catTheme.accent }}
+                                          aria-hidden="true"
+                                        />
                                         <span
                                           style={{ color: catTheme.text }}
-                                          className="hidden sm:inline-block font-mono-tabular text-[11.5px] font-semibold opacity-85 shrink-0"
+                                          className="inline-block font-mono-tabular text-[12px] sm:text-[11.5px] font-bold sm:font-semibold mr-1.5 sm:mr-0 opacity-90 sm:opacity-85 shrink-0"
                                         >
                                           {child.displayCode}
                                         </span>
-                                        <span className="text-[13.75px] sm:text-[14px] font-medium text-[#1E2E4A] group-hover:text-lam-tri-tue group-hover:underline decoration-minh-kim/65 underline-offset-4 leading-[1.45] break-words transition-colors">
+                                        <span className="text-[13.75px] sm:text-[14px] font-medium text-[#1E2E4A] group-hover:text-lam-tri-tue group-hover:underline decoration-minh-kim/65 underline-offset-4 leading-[1.42] sm:leading-[1.45] break-words transition-colors">
                                           {child.title}
                                         </span>
                                       </div>
                                     </button>
 
-                                    {/* Tablet (sm..md) StatusBadge */}
-                                    <div className="hidden sm:block lg:hidden shrink-0 pt-0.5">
+                                    {/* Mobile & Tablet (< lg) StatusBadge — stays compact on right or wraps cleanly when tight */}
+                                    <div className="lg:hidden shrink-0 pt-0.5">
                                       <StatusBadge
                                         status={child.status}
                                         compact
@@ -1982,7 +2010,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                                     hasChildDataReview ||
                                     childLinksNode ||
                                     child.archivedAt) && (
-                                    <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs leading-5">
+                                    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 sm:gap-x-2.5 gap-y-1 text-xs leading-5">
                                       {hasDistinctChildCategory && (
                                         <CategoryChip
                                           categoryId={effChildCat.categoryId}
@@ -2050,8 +2078,8 @@ export const TasksView: React.FC<TasksViewProps> = ({
                               </div>
                             </div>
 
-                            {/* Mobile (< lg) Child Meta */}
-                            <div className="lg:hidden pl-11 sm:pl-14 mt-1.5 space-y-1">
+                            {/* Mobile (< lg) Child Meta — zero double-indent on < sm */}
+                            <div className="lg:hidden pl-0 sm:pl-14 mt-1.5 space-y-1">
                               <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
                                 <div className="min-w-0 flex-1">
                                   {renderAssigneeCell(child)}
