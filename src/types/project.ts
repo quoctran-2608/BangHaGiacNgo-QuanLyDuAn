@@ -122,6 +122,16 @@ export interface MemberDirectoryEntry {
   updatedAt?: string;
 }
 
+export type MemberDirectoryStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+export interface MemberDirectorySyncResult {
+  totalUsers: number;
+  updatedCount: number;
+  unchangedCount: number;
+  skippedCount: number;
+  directoryCount: number;
+}
+
 export interface MemberInvite {
   email: string;
   displayName: string;

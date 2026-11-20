@@ -70,6 +70,7 @@ interface TaskDetailDrawerProps {
   categories: CategoryItem[];
   currentUser: ProjectMember;
   members: ProjectMember[];
+  directoryUnavailable?: boolean;
   onClose: () => void;
   onSelectTask: (taskId: string) => void;
   onSaveTask: (
@@ -128,6 +129,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
   categories,
   currentUser,
   members,
+  directoryUnavailable = false,
   onClose,
   onSelectTask,
   onSaveTask,
@@ -1598,7 +1600,9 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
                           )}
                           {resolvedAssignees.unknownUidCount > 0 && (
                             <span className="text-[#7D8796]">
-                              {resolvedAssignees.unknownUidCount === 1
+                              {directoryUnavailable
+                                ? 'Chưa tải danh bạ'
+                                : resolvedAssignees.unknownUidCount === 1
                                 ? 'Tài khoản không xác định'
                                 : `Tài khoản không xác định (${resolvedAssignees.unknownUidCount})`}
                             </span>

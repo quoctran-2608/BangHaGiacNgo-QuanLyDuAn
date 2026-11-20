@@ -54,6 +54,7 @@ interface DocumentsViewProps {
   categories: CategoryItem[];
   members?: ProjectMember[];
   currentUser: ProjectMember;
+  directoryUnavailable?: boolean;
   onSelectTask: (taskId: string) => void;
   onNavigateToTasks: () => void;
   onSaveTask: (
@@ -156,6 +157,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   categories,
   members = [],
   currentUser,
+  directoryUnavailable = false,
   onSelectTask,
   onNavigateToTasks,
   onSaveTask,
@@ -1159,8 +1161,9 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
 
             const assigneeForTooltip =
               entry.officialAssigneeText ??
-              entry.neutralAssigneeHint ??
-              entry.assigneeNamesText;
+              (directoryUnavailable && entry.assigneeStatusKind === 'unknown_account'
+                ? 'Chưa tải danh bạ'
+                : entry.neutralAssigneeHint ?? entry.assigneeNamesText);
 
             const taskTooltip = [
               `${entry.taskCode} — ${entry.taskTitle}`,
@@ -1510,8 +1513,10 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                 `Hạng mục: ${entry.categoryName}`,
                 `Phụ trách: ${
                   entry.officialAssigneeText ??
-                  entry.neutralAssigneeHint ??
-                  entry.assigneeNamesText
+                  (directoryUnavailable &&
+                  entry.assigneeStatusKind === 'unknown_account'
+                    ? 'Chưa tải danh bạ'
+                    : entry.neutralAssigneeHint ?? entry.assigneeNamesText)
                 }`,
               ].join(' · ');
 

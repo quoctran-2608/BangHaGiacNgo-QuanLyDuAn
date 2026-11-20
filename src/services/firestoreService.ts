@@ -22,6 +22,7 @@ import {
   AuthSettings,
   CategoryItem,
   MemberDirectoryEntry,
+  MemberDirectorySyncResult,
   MemberInvite,
   ProjectMember,
   TaskCategory,
@@ -187,7 +188,12 @@ function mapMemberDirectoryDoc(
 async function syncOwnMemberDirectoryBestEffort(
   profile: Pick<ProjectMember, 'uid' | 'displayName' | 'isActive'>
 ): Promise<void> {
-  if (!profile.uid || !profile.isActive || !profile.displayName.trim()) {
+  if (
+    !profile.uid ||
+    !profile.isActive ||
+    !profile.displayName.trim() ||
+    profile.displayName.length > 120
+  ) {
     return;
   }
   try {
@@ -199,7 +205,7 @@ async function syncOwnMemberDirectoryBestEffort(
         snap.data() as Record<string, unknown>
       );
       if (
-        existing.displayName === profile.displayName.trim() &&
+        existing.displayName === profile.displayName &&
         existing.isActive === profile.isActive
       ) {
         return;
@@ -207,12 +213,12 @@ async function syncOwnMemberDirectoryBestEffort(
     }
     await setDoc(dirRef, {
       uid: profile.uid,
-      displayName: profile.displayName.trim().slice(0, 120),
+      displayName: profile.displayName,
       isActive: profile.isActive,
       updatedAt: serverTimestamp(),
     });
   } catch {
-    // Best-effort sync; never block login if rules deployment is pending
+    // Best-effort self-sync; never block login if rules deployment is pending
   }
 }
 
@@ -498,10 +504,15 @@ export function subscribeUsers(
 /**
  * Non-PII display directory listener for Member/Viewer accounts so teammates'
  * official Project Display Names render identically without exposing `/users` PII emails.
+ * Never silently masks Firestore read errors as an empty/self-only directory.
  */
 export function subscribeMemberDirectory(
   currentUser: ProjectMember,
-  onData: (members: ProjectMember[]) => void
+  onData: (
+    members: ProjectMember[],
+    meta: { directoryDocCount: number }
+  ) => void,
+  onError?: (err: Error, meta: { isPermissionDenied: boolean }) => void
 ): Unsubscribe {
   return onSnapshot(
     collection(db, 'memberDirectory'),
@@ -514,16 +525,19 @@ export function subscribeMemberDirectory(
           d.id,
           d.data() as Record<string, unknown>
         );
+        const cleanName = entry.displayName.trim();
+        if (!cleanName) return;
+
         if (entry.uid === currentUser.uid) {
           byUid.set(entry.uid, {
             ...currentUser,
-            displayName: entry.displayName || currentUser.displayName,
+            displayName: cleanName || currentUser.displayName,
             isActive: entry.isActive,
           });
         } else {
           byUid.set(entry.uid, {
             uid: entry.uid,
-            displayName: entry.displayName,
+            displayName: cleanName,
             email: '',
             role: 'member',
             canApprove: false,
@@ -535,19 +549,48 @@ export function subscribeMemberDirectory(
         }
       });
 
-      onData(Array.from(byUid.values()));
+      onData(Array.from(byUid.values()), {
+        directoryDocCount: snapshot.size,
+      });
     },
-    () => {
-      // Fallback cleanly to currentUser if directory rules are not yet deployed
-      onData([currentUser]);
+    (error) => {
+      const code =
+        typeof (error as { code?: unknown })?.code === 'string'
+          ? String((error as { code?: unknown }).code)
+          : '';
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      const isPermissionDenied =
+        code === 'permission-denied' ||
+        rawMessage.toLowerCase().includes('permission');
+
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'memberDirectory');
+      } catch (wrapped) {
+        if (onError) {
+          onError(wrapped as Error, { isPermissionDenied });
+        }
+      }
     }
   );
 }
 
+/**
+ * Synchronizes minimal non-PII profiles (`uid`, `displayName`, `isActive`, `updatedAt`)
+ * from `/users` into `/memberDirectory` for Admin.
+ * Never falls back to email and never silently swallows write/read errors.
+ */
 export async function syncMemberDirectoryForAdmin(
   members: ProjectMember[]
-): Promise<void> {
-  if (members.length === 0) return;
+): Promise<MemberDirectorySyncResult> {
+  if (members.length === 0) {
+    return {
+      totalUsers: 0,
+      updatedCount: 0,
+      unchangedCount: 0,
+      skippedCount: 0,
+      directoryCount: 0,
+    };
+  }
   try {
     const snap = await getDocsFromServer(collection(db, 'memberDirectory'));
     const existingByUid = new Map<string, MemberDirectoryEntry>();
@@ -558,33 +601,66 @@ export async function syncMemberDirectoryForAdmin(
       );
     });
 
-    const batch = writeBatch(db);
-    let pendingCount = 0;
+    const pendingWrites: Array<{
+      uid: string;
+      displayName: string;
+      isActive: boolean;
+    }> = [];
+    let unchangedCount = 0;
+    let skippedCount = 0;
+    let newlyAddedCount = 0;
 
     for (const m of members) {
       const cleanName = m.displayName.trim().slice(0, 120);
-      if (!m.uid || !cleanName) continue;
+      if (!m.uid || !cleanName) {
+        skippedCount++;
+        continue;
+      }
       const existing = existingByUid.get(m.uid);
       if (
         !existing ||
         existing.displayName !== cleanName ||
         existing.isActive !== m.isActive
       ) {
-        batch.set(doc(db, 'memberDirectory', m.uid), {
+        if (!existing) {
+          newlyAddedCount++;
+        }
+        pendingWrites.push({
           uid: m.uid,
           displayName: cleanName,
           isActive: m.isActive,
-          updatedAt: serverTimestamp(),
         });
-        pendingCount++;
+      } else {
+        unchangedCount++;
       }
     }
 
-    if (pendingCount > 0) {
+    const CHUNK_SIZE = 400;
+    for (let i = 0; i < pendingWrites.length; i += CHUNK_SIZE) {
+      const chunk = pendingWrites.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      for (const item of chunk) {
+        batch.set(doc(db, 'memberDirectory', item.uid), {
+          uid: item.uid,
+          displayName: item.displayName,
+          isActive: item.isActive,
+          updatedAt: serverTimestamp(),
+        });
+      }
       await batch.commit();
     }
-  } catch {
-    // Non-blocking best-effort directory sync
+
+    return {
+      totalUsers: members.length,
+      updatedCount: pendingWrites.length,
+      unchangedCount,
+      skippedCount,
+      directoryCount: existingByUid.size + newlyAddedCount,
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'memberDirectory', {
+      memberCount: members.length,
+    });
   }
 }
 
@@ -1517,7 +1593,7 @@ export async function updateMemberInFirestore(
   uid: string,
   email: string,
   patch: Partial<Pick<ProjectMember, 'role' | 'canApprove' | 'isActive' | 'sheetAlias' | 'displayName'>>
-): Promise<void> {
+): Promise<{ directorySynced: boolean; directoryError?: string }> {
   const userPath = `users/${uid}`;
   const cleanPatch: Record<string, unknown> = { ...patch };
   if (patch.displayName !== undefined) {
@@ -1559,19 +1635,32 @@ export async function updateMemberInFirestore(
             updatedSnap.id,
             updatedSnap.data() as Record<string, unknown>
           );
-          if (updatedProfile.displayName.trim()) {
+          const cleanName = updatedProfile.displayName.trim().slice(0, 120);
+          if (cleanName) {
             await setDoc(doc(db, 'memberDirectory', uid), {
               uid,
-              displayName: updatedProfile.displayName.trim().slice(0, 120),
+              displayName: cleanName,
               isActive: updatedProfile.isActive,
               updatedAt: serverTimestamp(),
             });
+          } else {
+            return {
+              directorySynced: false,
+              directoryError:
+                'Tên hiển thị đang trống nên chưa đồng bộ sang danh bạ chung.',
+            };
           }
         }
-      } catch {
-        // Non-blocking best-effort directory sync
+      } catch (dirError) {
+        const dirMsg =
+          dirError instanceof Error ? dirError.message : String(dirError);
+        return {
+          directorySynced: false,
+          directoryError: dirMsg,
+        };
       }
     }
+    return { directorySynced: true };
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, userPath, cleanPatch);
   }

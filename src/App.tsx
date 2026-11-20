@@ -19,6 +19,7 @@ import {
   Library,
   LogOut,
   MoreHorizontal,
+  RefreshCw,
   Settings,
   UserCheck,
   Users,
@@ -29,6 +30,8 @@ import {
   AppRoute,
   AuthSettings,
   CategoryItem,
+  MemberDirectoryStatus,
+  MemberDirectorySyncResult,
   MemberInvite,
   ProjectMember,
   TaskCategory,
@@ -130,6 +133,18 @@ export default function App() {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [categories, setCategories] = useState<CategoryItem[]>([]);
   const [members, setMembers] = useState<ProjectMember[]>([]);
+  const [directoryState, setDirectoryState] = useState<{
+    status: MemberDirectoryStatus;
+    errorMessage: string | null;
+    isPermissionDenied: boolean;
+    docCount: number;
+  }>({
+    status: 'idle',
+    errorMessage: null,
+    isPermissionDenied: false,
+    docCount: 0,
+  });
+  const [directoryRetryKey, setDirectoryRetryKey] = useState(0);
   const [invites, setInvites] = useState<MemberInvite[]>([]);
   const [authSettings, setAuthSettings] = useState<AuthSettings>({
     allowOpenGoogleLogin: false,
@@ -263,12 +278,11 @@ export default function App() {
     return () => unsubSelf();
   }, [authUser, resolution?.status]);
 
-  // Real-time Firestore data listeners for authenticated active members
+  // Real-time Firestore task, category, invite, and settings listeners
   useEffect(() => {
     if (!currentUser || !currentUser.isActive) {
       setTasks([]);
       setCategories([]);
-      setMembers([]);
       setInvites([]);
       setAuthSettings({ allowOpenGoogleLogin: false });
       return;
@@ -281,33 +295,8 @@ export default function App() {
       showToast('error', formatActionError(err));
     });
 
-    let unsubUsers: (() => void) | undefined;
     let unsubInvites: (() => void) | undefined;
     let unsubAuthSettings: (() => void) | undefined;
-    let lastSyncedFingerprint = '';
-
-    if (currentUser.role === 'admin' || currentUser.role === 'moderator') {
-      unsubUsers = subscribeUsers(
-        (loadedMembers) => {
-          setMembers(loadedMembers);
-          if (currentUser.role === 'admin') {
-            const fp = loadedMembers
-              .map((m) => `${m.uid}:${m.displayName}:${m.isActive}`)
-              .sort()
-              .join('|');
-            if (fp !== lastSyncedFingerprint) {
-              lastSyncedFingerprint = fp;
-              void syncMemberDirectoryForAdmin(loadedMembers);
-            }
-          }
-        },
-        (err) => {
-          showToast('error', formatActionError(err));
-        }
-      );
-    } else {
-      unsubUsers = subscribeMemberDirectory(currentUser, setMembers);
-    }
 
     if (currentUser.role === 'admin') {
       unsubInvites = subscribeInvites(setInvites, (err) => {
@@ -324,15 +313,125 @@ export default function App() {
     return () => {
       unsubTasks();
       unsubCategories();
-      if (unsubUsers) unsubUsers();
       if (unsubInvites) unsubInvites();
       if (unsubAuthSettings) unsubAuthSettings();
+    };
+  }, [currentUser?.uid, currentUser?.role, currentUser?.isActive, showToast]);
+
+  // Dedicated member / directory subscription with explicit loading & error state
+  useEffect(() => {
+    if (!currentUser || !currentUser.isActive) {
+      setMembers([]);
+      setDirectoryState({
+        status: 'idle',
+        errorMessage: null,
+        isPermissionDenied: false,
+        docCount: 0,
+      });
+      return;
+    }
+
+    let cancelled = false;
+    let lastSyncedFingerprint = '';
+
+    setDirectoryState((prev) => ({
+      ...prev,
+      status: 'loading',
+      errorMessage: null,
+      isPermissionDenied: false,
+    }));
+
+    if (currentUser.role === 'admin' || currentUser.role === 'moderator') {
+      const unsubUsers = subscribeUsers(
+        (loadedMembers) => {
+          if (cancelled) return;
+          setMembers(loadedMembers);
+          setDirectoryState({
+            status: 'ready',
+            errorMessage: null,
+            isPermissionDenied: false,
+            docCount: loadedMembers.length,
+          });
+          if (currentUser.role === 'admin') {
+            const fp = loadedMembers
+              .map((m) => `${m.uid}:${m.displayName}:${m.isActive}`)
+              .sort()
+              .join('|');
+            if (fp !== lastSyncedFingerprint) {
+              lastSyncedFingerprint = fp;
+              void syncMemberDirectoryForAdmin(loadedMembers).catch((err) => {
+                if (!cancelled) {
+                  showToast(
+                    'error',
+                    `Chưa tự đồng bộ được danh bạ thành viên: ${formatActionError(err)}`
+                  );
+                }
+              });
+            }
+          }
+        },
+        (err) => {
+          if (cancelled) return;
+          const msg = formatActionError(err);
+          setDirectoryState((prev) => ({
+            ...prev,
+            status: 'error',
+            errorMessage: msg,
+            isPermissionDenied: msg.toLowerCase().includes('permission'),
+          }));
+          showToast('error', msg);
+        }
+      );
+
+      return () => {
+        cancelled = true;
+        unsubUsers();
+      };
+    }
+
+    // Member / Viewer: read minimal non-PII `/memberDirectory` without ever masking errors
+    setMembers((prev) => {
+      if (prev.length === 0) return [currentUser];
+      const hasSelf = prev.some((m) => m.uid === currentUser.uid);
+      return hasSelf
+        ? prev.map((m) => (m.uid === currentUser.uid ? currentUser : m))
+        : [currentUser, ...prev];
+    });
+
+    const unsubDirectory = subscribeMemberDirectory(
+      currentUser,
+      (loadedMembers, meta) => {
+        if (cancelled) return;
+        setMembers(loadedMembers);
+        setDirectoryState({
+          status: 'ready',
+          errorMessage: null,
+          isPermissionDenied: false,
+          docCount: meta.directoryDocCount,
+        });
+      },
+      (err, meta) => {
+        if (cancelled) return;
+        setMembers((prev) => (prev.length > 0 ? prev : [currentUser]));
+        setDirectoryState({
+          status: 'error',
+          errorMessage: formatActionError(err),
+          isPermissionDenied: meta.isPermissionDenied,
+          docCount: 0,
+        });
+      }
+    );
+
+    return () => {
+      cancelled = true;
+      unsubDirectory();
     };
   }, [
     currentUser?.uid,
     currentUser?.role,
     currentUser?.isActive,
     currentUser?.displayName,
+    directoryRetryKey,
     showToast,
   ]);
 
@@ -624,10 +723,42 @@ export default function App() {
   ) => {
     if (!currentUser || currentUser.role !== 'admin') return;
     try {
-      await updateMemberInFirestore(uid, email, patch);
+      const syncResult = await updateMemberInFirestore(uid, email, patch);
+      if (!syncResult.directorySynced) {
+        showToast(
+          'error',
+          `Đã cập nhật thành viên nhưng chưa đồng bộ danh bạ chung (${syncResult.directoryError ?? 'lỗi không xác định'}). Hãy bấm "Đồng bộ danh bạ".`
+        );
+        return;
+      }
       showToast('success', 'Đã cập nhật thông tin thành viên');
     } catch (err) {
       showToast('error', formatActionError(err));
+    }
+  };
+
+  const handleSyncMemberDirectory = async (): Promise<MemberDirectorySyncResult> => {
+    if (!currentUser || currentUser.role !== 'admin' || !currentUser.isActive) {
+      throw new Error('Chỉ Quản trị viên đang hoạt động mới được đồng bộ danh bạ.');
+    }
+    try {
+      const result = await syncMemberDirectoryForAdmin(members);
+      if (result.updatedCount > 0) {
+        showToast(
+          'success',
+          `Đã đồng bộ danh bạ: cập nhật ${result.updatedCount} hồ sơ, ${result.unchangedCount} hồ sơ đã khớp.`
+        );
+      } else {
+        showToast(
+          'success',
+          `Danh bạ thành viên đã đầy đủ (${result.unchangedCount} hồ sơ đã khớp).`
+        );
+      }
+      return result;
+    } catch (err) {
+      const msg = formatActionError(err);
+      showToast('error', `Chưa đồng bộ được danh bạ: ${msg}`);
+      throw new Error(msg);
     }
   };
 
@@ -1113,6 +1244,61 @@ export default function App() {
 
         {/* Main Viewport Content */}
         <main className="flex-1 w-full max-w-6xl mx-auto px-3 sm:px-6 py-4 sm:py-6 pb-24 lg:pb-8">
+          {(() => {
+            const directoryUnavailable = directoryState.status === 'error';
+            const isNonManager =
+              currentUser.role !== 'admin' && currentUser.role !== 'moderator';
+            const knownMemberUids = new Set(members.map((m) => m.uid));
+            const hasUnresolvedTaskAssignees =
+              isNonManager &&
+              directoryState.status === 'ready' &&
+              directoryState.docCount <= 1 &&
+              tasks.some(
+                (t) =>
+                  !t.archivedAt &&
+                  !t.isTestRecord &&
+                  t.assigneeUids.some((uid) => !knownMemberUids.has(uid))
+              );
+
+            if (!directoryUnavailable && !hasUnresolvedTaskAssignees) {
+              return null;
+            }
+
+            return (
+              <div
+                role="status"
+                className="mb-4 rounded-xl border border-minh-kim-border bg-minh-kim-soft/75 px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+              >
+                <div className="flex items-start gap-2.5 min-w-0">
+                  <AlertTriangle className="w-4 h-4 text-minh-kim-ink shrink-0 mt-0.5" />
+                  <div className="min-w-0 text-xs text-huyen-lam leading-relaxed">
+                    <span className="font-semibold">
+                      {directoryUnavailable
+                        ? 'Chưa tải được danh bạ thành viên'
+                        : 'Danh bạ thành viên chưa đồng bộ đầy đủ'}
+                    </span>
+                    <span className="text-huyen-lam/80">
+                      {' — '}
+                      {directoryUnavailable
+                        ? directoryState.isPermissionDenied
+                          ? 'Chưa đọc được danh bạ tên chính thức của dự án. Bạn vẫn xem công việc bình thường và có thể thử tải lại.'
+                          : 'Kết nối danh bạ tạm gián đoạn. Bạn vẫn xem công việc bình thường và có thể thử tải lại.'
+                        : 'Một số tên người phụ trách chưa có trong danh bạ chung. Vui lòng báo Quản trị viên đồng bộ danh bạ rồi tải lại.'}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDirectoryRetryKey((k) => k + 1)}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-minh-kim-border bg-white text-huyen-lam hover:bg-[#FAF8F3] text-xs font-medium whitespace-nowrap shrink-0 min-h-[36px] transition-colors"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 shrink-0" />
+                  <span>Thử tải lại</span>
+                </button>
+              </div>
+            );
+          })()}
+
           {route === 'overview' && (
             <OverviewView
               tasks={tasks}
@@ -1138,6 +1324,7 @@ export default function App() {
               categories={categories}
               members={members}
               currentUser={currentUser}
+              directoryUnavailable={directoryState.status === 'error'}
               initialStatusFilter={tasksFilterPreset.status ?? 'all'}
               initialCategoryFilter={tasksFilterPreset.categoryId ?? 'all'}
               initialReviewOnly={tasksFilterPreset.reviewOnly ?? false}
@@ -1165,6 +1352,7 @@ export default function App() {
               categories={categories}
               members={members}
               currentUser={currentUser}
+              directoryUnavailable={directoryState.status === 'error'}
               onSelectTask={(id) => setSelectedTaskId(id)}
               onNavigateToTasks={() => setRoute('tasks')}
               onSaveTask={handleSaveTask}
@@ -1198,6 +1386,9 @@ export default function App() {
               invites={invites}
               tasks={tasks}
               currentUser={currentUser}
+              onSyncMemberDirectory={
+                isAdmin ? handleSyncMemberDirectory : undefined
+              }
               onAssignTasksToMember={handleAssignTasksToMember}
               onTransferTaskUid={handleTransferTaskUid}
               onAddInvite={handleAddInvite}
@@ -1336,6 +1527,7 @@ export default function App() {
         categories={categories}
         currentUser={currentUser}
         members={members}
+        directoryUnavailable={directoryState.status === 'error'}
         onClose={() => setSelectedTaskId(null)}
         onSelectTask={(id) => setSelectedTaskId(id)}
         onSaveTask={handleSaveTask}

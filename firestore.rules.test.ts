@@ -2925,6 +2925,285 @@ test('Case 14: My Work Dashboard V2.0 partitions personal vs group tasks, evalua
   assert.equal(freshMyTasksText.includes('border-l-2'), false);
 });
 
+test('Case 15: Member Directory official assignee visibility across Admin/Member/Viewer, PII isolation, rename/locked sync, and non-silent error handling', () => {
+  // 1. Canonical project members as seen by Admin (/users) vs Member/Viewer (/memberDirectory minimal non-PII)
+  const adminUsersList: ProjectMember[] = [
+    {
+      uid: 'uid_quoc',
+      displayName: 'Quốc',
+      email: 'tduyquoc@gmail.com',
+      role: 'admin',
+      canApprove: true,
+      isActive: true,
+      sheetAlias: 'Quốc',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      uid: 'uid_khanh',
+      displayName: 'Khánh',
+      email: 'khanh@tbhgn.vn',
+      role: 'member',
+      canApprove: false,
+      isActive: true,
+      sheetAlias: 'Khánh',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      uid: 'uid_my',
+      displayName: 'Mỵ',
+      email: 'my@tbhgn.vn',
+      role: 'member',
+      canApprove: false,
+      isActive: true,
+      sheetAlias: 'Mỵ',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      uid: 'uid_sutin',
+      displayName: 'Sư Tín',
+      email: 'linhgiangtu1991@gmail.com',
+      role: 'moderator',
+      canApprove: true,
+      isActive: true,
+      sheetAlias: 'Sư Pháp Tín',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      uid: 'uid_suphu',
+      displayName: 'Sư Phụ',
+      email: 'ngaothuyet2023@gmail.com',
+      role: 'member',
+      canApprove: true,
+      isActive: true,
+      sheetAlias: 'Sư Phụ',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      uid: 'uid_tuan_locked',
+      displayName: 'Tuấn',
+      email: 'tuan.old@gmail.com',
+      role: 'member',
+      canApprove: false,
+      isActive: false,
+      sheetAlias: 'Khả Tuệ',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+  ];
+
+  // Simulate minimal non-PII `/memberDirectory` projection received by Member A (Khánh) and Viewer
+  const toMinimalDirectoryFor = (self: ProjectMember): ProjectMember[] =>
+    adminUsersList.map((u) =>
+      u.uid === self.uid
+        ? self
+        : {
+            uid: u.uid,
+            displayName: u.displayName,
+            email: '',
+            role: 'member',
+            canApprove: false,
+            isActive: u.isActive,
+            sheetAlias: '',
+            createdAt: '',
+          }
+    );
+
+  const memberA = adminUsersList[1]; // Khánh (member)
+  const viewerAccount: ProjectMember = {
+    uid: 'uid_viewer_1',
+    displayName: 'Khách xem',
+    email: 'viewer@tbhgn.vn',
+    role: 'viewer',
+    canApprove: false,
+    isActive: true,
+    sheetAlias: '',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  const memberDirectoryForKhanh = toMinimalDirectoryFor(memberA);
+  const memberDirectoryForViewer = [viewerAccount, ...toMinimalDirectoryFor(viewerAccount)];
+
+  // Ensure zero PII leakage in non-self directory entries
+  for (const entry of memberDirectoryForKhanh) {
+    if (entry.uid !== memberA.uid) {
+      assert.equal(entry.email, '');
+      assert.equal(entry.canApprove, false);
+      assert.equal(entry.sheetAlias, '');
+    }
+  }
+
+  const sharedTasks: TaskItem[] = [
+    {
+      ...sampleTasks[0],
+      id: 't_my',
+      displayCode: '1',
+      title: 'Biên tập chương 1',
+      assignees: ['Mỵ', 'Sư Pháp Tín'],
+      assigneeUids: ['uid_my', 'uid_sutin'],
+      referenceLinks: [
+        {
+          id: 'ref_my_1',
+          label: 'Tài liệu gốc chương 1',
+          url: 'https://docs.google.com/document/d/ch1/edit',
+          type: 'reference',
+        },
+      ],
+      resultLinks: [],
+      isTestRecord: false,
+    },
+    {
+      ...sampleTasks[0],
+      id: 't_multi',
+      displayCode: '2',
+      title: 'Rà soát toàn bộ',
+      assignees: ['Quốc', 'Khánh', 'Sư Phụ'],
+      assigneeUids: ['uid_quoc', 'uid_khanh', 'uid_suphu'],
+      referenceLinks: [],
+      resultLinks: [],
+      isTestRecord: false,
+    },
+    {
+      ...sampleTasks[0],
+      id: 't_locked',
+      displayCode: '3',
+      title: 'Công việc cũ của tài khoản đã khóa',
+      assignees: ['Khả Tuệ'],
+      assigneeUids: ['uid_tuan_locked'],
+      referenceLinks: [],
+      resultLinks: [],
+      isTestRecord: false,
+    },
+    {
+      ...sampleTasks[0],
+      id: 't_orphan',
+      displayCode: '4',
+      title: 'Công việc chứa UID cũ không tồn tại',
+      assignees: [],
+      assigneeUids: ['uid_deleted_legacy_999'],
+      referenceLinks: [],
+      resultLinks: [],
+      isTestRecord: false,
+    },
+  ];
+
+  // 2. Member A viewing Member B's task sees exact official names, matching Admin, with ZERO extra edit rights
+  const adminResolvedB = resolveTaskAssignees(sharedTasks[0], adminUsersList);
+  const memberResolvedB = resolveTaskAssignees(sharedTasks[0], memberDirectoryForKhanh);
+  const viewerResolvedB = resolveTaskAssignees(sharedTasks[0], memberDirectoryForViewer);
+
+  assert.equal(adminResolvedB.displayText, 'Mỵ, Sư Tín');
+  assert.equal(memberResolvedB.displayText, adminResolvedB.displayText);
+  assert.equal(viewerResolvedB.displayText, adminResolvedB.displayText);
+  assert.equal(memberResolvedB.unknownUidCount, 0);
+  assert.equal(viewerResolvedB.unknownUidCount, 0);
+  assert.equal(canUserEditTask(memberA, sharedTasks[0]), false);
+  assert.equal(canUserEditTask(viewerAccount, sharedTasks[0]), false);
+  assert.equal(canUserEditTask(memberA, sharedTasks[1]), true); // assigned to Khánh
+  assert.equal(canUserEditTask(viewerAccount, sharedTasks[1]), false);
+
+  // 3. Multi-assignee & co-assignee resolution in My Work matches official names
+  const coInfoForKhanh = getMyWorkCoAssigneesInfo(
+    sharedTasks[1],
+    memberA.uid,
+    memberDirectoryForKhanh
+  );
+  assert.deepEqual(coInfoForKhanh.coAssigneeNames, ['Quốc', 'Sư Phụ']);
+  assert.equal(coInfoForKhanh.unknownUidCount, 0);
+
+  // 4. Admin renames Member B (Mỵ -> Mỵ (Biên tập)) -> synced directory immediately updates Tasks & Documents
+  const renamedDirectory = memberDirectoryForKhanh.map((m) =>
+    m.uid === 'uid_my' ? { ...m, displayName: 'Mỵ (Biên tập)' } : m
+  );
+  assert.equal(
+    resolveTaskAssignees(sharedTasks[0], renamedDirectory).displayText,
+    'Mỵ (Biên tập), Sư Tín'
+  );
+  const docsForMember = buildProjectDocumentEntries(
+    [sharedTasks[0]],
+    sampleCategories,
+    renamedDirectory
+  );
+  assert.equal(docsForMember.entries[0].officialAssigneeText, 'Mỵ (Biên tập), Sư Tín');
+
+  // 5. Locked account preserves UID link and displays "Tuấn (Đã khóa)" identically for Admin/Member/Viewer
+  assert.equal(
+    resolveTaskAssignees(sharedTasks[2], adminUsersList).displayText,
+    'Tuấn (Đã khóa)'
+  );
+  assert.equal(
+    resolveTaskAssignees(sharedTasks[2], memberDirectoryForKhanh).displayText,
+    'Tuấn (Đã khóa)'
+  );
+  assert.equal(
+    resolveTaskAssignees(sharedTasks[2], memberDirectoryForViewer).displayText,
+    'Tuấn (Đã khóa)'
+  );
+
+  // 6. Truly unmatched/old UID still surfaces neutral "Tài khoản không xác định" (never raw UID)
+  const orphanResolved = resolveTaskAssignees(sharedTasks[3], memberDirectoryForKhanh);
+  assert.equal(orphanResolved.unknownUidCount, 1);
+  assert.equal(orphanResolved.displayText, 'Tài khoản không xác định');
+  assert.equal(orphanResolved.displayText.includes('uid_deleted_legacy_999'), false);
+
+  // 7. Firestore Rules PII isolation & access control verification
+  assert.match(
+    rulesText,
+    /function isTaskManager\(\)[\s\S]*?p\.role == 'admin' \|\| p\.role == 'moderator'/
+  );
+  assert.match(
+    rulesText,
+    /match \/users\/\{uid\}[\s\S]*?allow list:\s*if isTaskManager\(\);/
+  );
+  assert.match(
+    rulesText,
+    /function isValidMemberDirectoryEntry\(data, uid\)[\s\S]*?hasOnly\(\['uid', 'displayName', 'isActive', 'updatedAt'\]\)/
+  );
+  assert.match(
+    rulesText,
+    /match \/memberDirectory\/\{uid\}[\s\S]*?allow get:\s*if isActiveMember\(\) && isValidId\(uid\);[\s\S]*?allow list:\s*if isActiveMember\(\);[\s\S]*?allow delete:\s*if false;/
+  );
+
+  // 8. Non-silent error handling, Admin manual sync button, and UI contracts
+  const freshServiceText = fs.readFileSync(
+    path.join(rootDir, 'src/services/firestoreService.ts'),
+    'utf8'
+  );
+  const freshAppText = fs.readFileSync(path.join(rootDir, 'src/App.tsx'), 'utf8');
+  const freshMembersText = fs.readFileSync(
+    path.join(rootDir, 'src/components/MembersView.tsx'),
+    'utf8'
+  );
+  const freshTasksViewText = fs.readFileSync(
+    path.join(rootDir, 'src/components/TasksView.tsx'),
+    'utf8'
+  );
+  const freshDrawerText = fs.readFileSync(
+    path.join(rootDir, 'src/components/TaskDetailDrawer.tsx'),
+    'utf8'
+  );
+
+  assert.equal(
+    freshServiceText.includes('Fallback cleanly to currentUser if directory rules are not yet deployed'),
+    false
+  );
+  assert.equal(freshServiceText.includes('onError?: (err: Error, meta: { isPermissionDenied: boolean })'), true);
+  assert.equal(freshServiceText.includes('Promise<MemberDirectorySyncResult>'), true);
+  assert.equal(freshServiceText.includes('directorySynced: false'), true);
+
+  assert.equal(freshAppText.includes('Chưa tải được danh bạ thành viên'), true);
+  assert.equal(freshAppText.includes('Thử tải lại'), true);
+  assert.equal(freshAppText.includes('handleSyncMemberDirectory'), true);
+  assert.equal(freshAppText.includes('directoryUnavailable={directoryState.status === \'error\'}'), true);
+
+  assert.equal(freshMembersText.includes('Đồng bộ danh bạ'), true);
+  assert.equal(freshMembersText.includes('onSyncMemberDirectory'), true);
+
+  assert.equal(freshTasksViewText.includes('directoryUnavailable'), true);
+  assert.equal(freshTasksViewText.includes('visibleMembers = resolved.assignedMembers.slice(0, 2)'), true);
+  assert.equal(freshTasksViewText.includes('overflowCount > 0'), true);
+
+  assert.equal(freshDrawerText.includes('directoryUnavailable'), true);
+});
+
 
 
 

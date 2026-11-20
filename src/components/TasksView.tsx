@@ -46,6 +46,7 @@ interface TasksViewProps {
   categories: CategoryItem[];
   currentUser: ProjectMember;
   members?: ProjectMember[];
+  directoryUnavailable?: boolean;
   initialStatusFilter?: string;
   initialCategoryFilter?: string;
   initialReviewOnly?: boolean;
@@ -62,6 +63,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
   categories,
   currentUser,
   members = [],
+  directoryUnavailable = false,
   initialStatusFilter = 'all',
   initialCategoryFilter = 'all',
   initialReviewOnly = false,
@@ -553,32 +555,61 @@ export const TasksView: React.FC<TasksViewProps> = ({
       );
     }
 
+    const visibleMembers = resolved.assignedMembers.slice(0, 2);
+    const overflowCount = Math.max(0, resolved.assignedMembers.length - 2);
+    const fullAssignedNamesTooltip = resolved.assignedMembers
+      .map((am) => (am.isActive ? am.displayName : `${am.displayName} (Đã khóa)`))
+      .join(', ');
+
     return (
       <div className="min-w-0 inline-flex items-center gap-1.5 flex-wrap">
-        {resolved.assignedMembers.length > 0 && (
-          <span className="text-[13px] font-medium leading-snug break-words">
-            {resolved.assignedMembers.map((am, idx) => (
-              <React.Fragment key={am.uid}>
-                {idx > 0 && <span className="text-[#8E96A3]">, </span>}
-                <span
-                  className={
-                    am.isActive ? 'text-huyen-lam' : 'text-[#7D8796]'
-                  }
-                >
-                  {am.displayName}
-                  {!am.isActive ? ' (Đã khóa)' : ''}
-                </span>
-              </React.Fragment>
-            ))}
+        {visibleMembers.length > 0 && (
+          <span
+            title={overflowCount > 0 ? fullAssignedNamesTooltip : undefined}
+            className="text-[13px] font-medium leading-snug break-words inline-flex items-center gap-1 flex-wrap"
+          >
+            <span>
+              {visibleMembers.map((am, idx) => (
+                <React.Fragment key={am.uid}>
+                  {idx > 0 && <span className="text-[#8E96A3]">, </span>}
+                  <span
+                    className={
+                      am.isActive ? 'text-huyen-lam' : 'text-[#7D8796]'
+                    }
+                  >
+                    {am.displayName}
+                    {!am.isActive ? ' (Đã khóa)' : ''}
+                  </span>
+                </React.Fragment>
+              ))}
+            </span>
+            {overflowCount > 0 && (
+              <span
+                title={fullAssignedNamesTooltip}
+                className="inline-flex items-center px-1.5 py-0.5 rounded bg-[#F3EFE6] border border-[#DFD8CA] text-huyen-lam text-[11px] font-semibold font-mono-tabular whitespace-nowrap"
+              >
+                +{overflowCount}
+              </span>
+            )}
           </span>
         )}
-        {resolved.unknownUidCount > 0 && (
-          <span className="text-[12.5px] font-medium text-[#7D8796]">
-            {resolved.unknownUidCount === 1
-              ? 'Tài khoản không xác định'
-              : `Tài khoản không xác định (${resolved.unknownUidCount})`}
-          </span>
-        )}
+        {resolved.unknownUidCount > 0 &&
+          (directoryUnavailable ? (
+            <span
+              title="Chưa tải được danh bạ thành viên"
+              className="text-[12.5px] text-[#8E96A3]"
+            >
+              {visibleMembers.length > 0
+                ? `+${resolved.unknownUidCount}`
+                : '—'}
+            </span>
+          ) : (
+            <span className="text-[12.5px] font-medium text-[#7D8796]">
+              {resolved.unknownUidCount === 1
+                ? 'Tài khoản không xác định'
+                : `Tài khoản không xác định (${resolved.unknownUidCount})`}
+            </span>
+          ))}
         {resolved.isUnlinkedAccount && (
           <span
             title="Chưa liên kết tài khoản Google (UID)"

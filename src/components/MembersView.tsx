@@ -10,6 +10,7 @@ import {
   Lock,
   Pencil,
   Plus,
+  RefreshCw,
   ShieldCheck,
   Trash2,
   Unlock,
@@ -18,6 +19,7 @@ import {
   Users,
 } from 'lucide-react';
 import {
+  MemberDirectorySyncResult,
   MemberInvite,
   ProjectMember,
   TaskItem,
@@ -46,6 +48,7 @@ interface MembersViewProps {
   invites: MemberInvite[];
   tasks?: TaskItem[];
   currentUser: ProjectMember;
+  onSyncMemberDirectory?: () => Promise<MemberDirectorySyncResult>;
   onAssignTasksToMember?: (
     member: ProjectMember,
     taskIds: string[]
@@ -81,6 +84,7 @@ export const MembersView: React.FC<MembersViewProps> = ({
   invites,
   tasks = [],
   currentUser,
+  onSyncMemberDirectory,
   onAssignTasksToMember,
   onTransferTaskUid,
   onAddInvite,
@@ -121,6 +125,47 @@ export const MembersView: React.FC<MembersViewProps> = ({
   const [renameDraft, setRenameDraft] = useState('');
   const [renameError, setRenameError] = useState<string | null>(null);
   const [savingRename, setSavingRename] = useState(false);
+  const [syncingDirectory, setSyncingDirectory] = useState(false);
+  const [directorySyncFeedback, setDirectorySyncFeedback] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+
+  const handleSyncDirectoryClick = async () => {
+    if (!onSyncMemberDirectory || syncingDirectory) return;
+    setSyncingDirectory(true);
+    setDirectorySyncFeedback(null);
+    try {
+      const result = await onSyncMemberDirectory();
+      const parts: string[] = [];
+      if (result.updatedCount > 0) {
+        parts.push(`cập nhật ${result.updatedCount} hồ sơ`);
+      }
+      if (result.unchangedCount > 0) {
+        parts.push(`${result.unchangedCount} hồ sơ đã khớp`);
+      }
+      if (result.skippedCount > 0) {
+        parts.push(`bỏ qua ${result.skippedCount} hồ sơ thiếu tên hiển thị`);
+      }
+      setDirectorySyncFeedback({
+        type: 'success',
+        text:
+          parts.length > 0
+            ? `Đã đồng bộ danh bạ thành viên: ${parts.join(', ')}.`
+            : 'Danh bạ thành viên đã được kiểm tra và đồng bộ.',
+      });
+    } catch (err) {
+      setDirectorySyncFeedback({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Chưa đồng bộ được danh bạ thành viên.',
+      });
+    } finally {
+      setSyncingDirectory(false);
+    }
+  };
 
   const openRenameForMember = (member: ProjectMember) => {
     if (renamingUid === member.uid) {
@@ -409,16 +454,63 @@ export const MembersView: React.FC<MembersViewProps> = ({
         </div>
 
         {isAdmin && (
-          <button
-            type="button"
-            onClick={() => setShowAddForm((v) => !v)}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-huyen-lam text-white text-sm font-medium hover:bg-lam-tri-tue transition-colors whitespace-nowrap shrink-0 min-h-[44px]"
-          >
-            <Plus className="w-4 h-4 shrink-0" />
-            <span>Thêm thành viên</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {onSyncMemberDirectory && (
+              <button
+                type="button"
+                onClick={handleSyncDirectoryClick}
+                disabled={syncingDirectory}
+                title="Đồng bộ tên hiển thị chính thức sang danh bạ chung để Member và Viewer xem đúng tên người phụ trách"
+                className="inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-lg border border-nga-xam bg-white text-huyen-lam text-sm font-medium hover:bg-[#FAF8F3] hover:border-minh-kim-border disabled:opacity-60 transition-colors whitespace-nowrap shrink-0 min-h-[44px]"
+              >
+                <RefreshCw
+                  className={`w-4 h-4 shrink-0 text-lam-tri-tue ${
+                    syncingDirectory ? 'animate-spin' : ''
+                  }`}
+                />
+                <span>
+                  {syncingDirectory ? 'Đang đồng bộ...' : 'Đồng bộ danh bạ'}
+                </span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowAddForm((v) => !v)}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-huyen-lam text-white text-sm font-medium hover:bg-lam-tri-tue transition-colors whitespace-nowrap shrink-0 min-h-[44px]"
+            >
+              <Plus className="w-4 h-4 shrink-0" />
+              <span>Thêm thành viên</span>
+            </button>
+          </div>
         )}
       </div>
+
+      {isAdmin && directorySyncFeedback && (
+        <div
+          role={directorySyncFeedback.type === 'error' ? 'alert' : 'status'}
+          className={`rounded-xl border px-3.5 py-2.5 text-xs flex items-center justify-between gap-3 ${
+            directorySyncFeedback.type === 'success'
+              ? 'bg-[#EFF7F5] border-[#C9E2DD] text-[#1D5950]'
+              : 'bg-red-50 border-red-200 text-red-900'
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            {directorySyncFeedback.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 shrink-0 text-red-700" />
+            )}
+            <span className="break-words">{directorySyncFeedback.text}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDirectorySyncFeedback(null)}
+            className="text-xs font-medium opacity-75 hover:opacity-100 shrink-0"
+          >
+            Đóng
+          </button>
+        </div>
+      )}
 
       {!isAdmin ? (
         <div className="space-y-4">
