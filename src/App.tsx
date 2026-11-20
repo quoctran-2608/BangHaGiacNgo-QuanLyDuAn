@@ -160,6 +160,8 @@ export default function App() {
     status?: string;
     categoryId?: string;
     reviewOnly?: boolean;
+    overdueOnly?: boolean;
+    focusParentId?: string;
     key: number;
   }>({ key: 0 });
   const [toast, setToast] = useState<ToastMessage | null>(null);
@@ -1085,7 +1087,12 @@ export default function App() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setRoute(item.id)}
+                onClick={() => {
+                  if (item.id === 'tasks' && route !== 'tasks') {
+                    setTasksFilterPreset({ key: Date.now() });
+                  }
+                  setRoute(item.id);
+                }}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
                   active
                     ? 'bg-white/12 text-kim-quang ring-1 ring-minh-kim/35'
@@ -1310,7 +1317,10 @@ export default function App() {
               onNavigateToTasks={(preset) => {
                 setTasksFilterPreset({
                   status: preset?.status,
+                  categoryId: preset?.categoryId,
                   reviewOnly: preset?.reviewOnly,
+                  overdueOnly: preset?.overdueOnly,
+                  focusParentId: preset?.focusParentId,
                   key: Date.now(),
                 });
                 setRoute('tasks');
@@ -1329,6 +1339,8 @@ export default function App() {
               initialStatusFilter={tasksFilterPreset.status ?? 'all'}
               initialCategoryFilter={tasksFilterPreset.categoryId ?? 'all'}
               initialReviewOnly={tasksFilterPreset.reviewOnly ?? false}
+              initialOverdueOnly={tasksFilterPreset.overdueOnly ?? false}
+              initialFocusParentId={tasksFilterPreset.focusParentId}
               onSelectTask={(id) => setSelectedTaskId(id)}
               onOpenNewTask={(parentId) => setNewTaskParentId(parentId ?? null)}
               onNavigateToDocuments={() => setRoute('documents')}
@@ -1467,7 +1479,12 @@ export default function App() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setRoute(item.id)}
+                onClick={() => {
+                  if (item.id === 'tasks' && route !== 'tasks') {
+                    setTasksFilterPreset({ key: Date.now() });
+                  }
+                  setRoute(item.id);
+                }}
                 className={`relative min-h-[54px] flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium transition-colors ${
                   active
                     ? 'text-huyen-lam font-semibold'

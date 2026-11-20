@@ -23,6 +23,7 @@ import {
 } from '@firebase/rules-unit-testing';
 import firebaseConfig from './firebase-applet-config.json';
 import {
+  buildOverviewWatchlist,
   buildProjectDocumentEntries,
   buildTaskLinkAddPatch,
   buildTaskLinkRemovePatch,
@@ -33,6 +34,7 @@ import {
   canUserCreateSubtaskInParent,
   canUserEditTask,
   compareTasksForMyWork,
+  computeOverviewStats,
   computeParentProgress,
   evaluateMyWorkAttention,
   exportTasksToCSV,
@@ -3483,3 +3485,248 @@ test('Case 17: Semantic Color Harmony V2.3 — pure white My Work cards, status-
   assert.equal(freshTasksView.includes('text-[12.5px] text-[#647082]'), true);
   assert.equal(freshTasksView.includes('text-[#606B7D] font-medium'), true);
 });
+
+test('Case 18: Smart Overview Dashboard V2.0 — accurate 5-status + missing-status math, deduplicated RBAC-safe watchlist, balanced layout, and smart navigation presets', () => {
+  const refToday = new Date('2026-04-20T09:00:00.000Z');
+
+  const adminUser = {
+    uid: 'uid_admin',
+    displayName: 'Quốc',
+    email: 'admin@tbhgn.vn',
+    role: 'admin' as const,
+    canApprove: true,
+    isActive: true,
+    sheetAlias: 'Quốc',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const memberUser = {
+    uid: 'uid_member',
+    displayName: 'Khánh',
+    email: 'khanh@tbhgn.vn',
+    role: 'member' as const,
+    canApprove: false,
+    isActive: true,
+    sheetAlias: 'Khánh',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const viewerUser = {
+    uid: 'uid_viewer',
+    displayName: 'Khách xem',
+    email: 'viewer@tbhgn.vn',
+    role: 'viewer' as const,
+    canApprove: false,
+    isActive: true,
+    sheetAlias: '',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  const makeTask = (overrides: Record<string, unknown>) =>
+    ({
+      id: 't_base',
+      displayCode: '1',
+      parentId: null,
+      title: 'Công việc mẫu',
+      category: 'Đề cương & cấu trúc',
+      categoryId: 'cat_outline',
+      assignees: [],
+      assigneeUids: ['uid_member'],
+      status: 'Đang làm',
+      referenceLinks: [],
+      resultLinks: [],
+      nextStep: null,
+      notes: null,
+      dueDate: null,
+      sortOrder: 1,
+      reviewFlags: [],
+      sourceRowIndex: 1,
+      version: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      updatedBy: 'uid_admin',
+      archivedAt: null,
+      ...overrides,
+    }) as any;
+
+  const sampleTasks = [
+    makeTask({ id: 'p1', displayCode: '1', status: 'Đang làm', sortOrder: 1 }),
+    makeTask({
+      id: 'c1_1',
+      displayCode: '1.1',
+      parentId: 'p1',
+      status: 'Chờ duyệt',
+      dueDate: '2026-04-10', // BOTH overdue AND pending approval!
+      sortOrder: 2,
+    }),
+    makeTask({
+      id: 'c1_2',
+      displayCode: '1.2',
+      parentId: 'p1',
+      status: 'Đang làm',
+      dueDate: '2026-04-05', // Earlier overdue (non-pending)
+      sortOrder: 3,
+    }),
+    makeTask({
+      id: 'p2',
+      displayCode: '2',
+      status: 'Chờ duyệt',
+      dueDate: '2026-05-01', // Not overdue, pending approval
+      sortOrder: 4,
+    }),
+    makeTask({
+      id: 'p3',
+      displayCode: '3',
+      status: 'Tạm dừng',
+      sortOrder: 5,
+    }),
+    makeTask({
+      id: 'p4',
+      displayCode: '4',
+      status: 'Hoàn thành',
+      dueDate: '2026-04-01', // Completed past due date is NEVER overdue
+      sortOrder: 6,
+    }),
+    makeTask({
+      id: 'p5',
+      displayCode: '5',
+      status: 'Chưa bắt đầu',
+      sortOrder: 7,
+    }),
+    makeTask({
+      id: 'p6',
+      displayCode: '6',
+      status: null, // Strictly missing status, NOT Chưa bắt đầu
+      reviewFlags: ['missing_status'],
+      sortOrder: 8,
+    }),
+    // Excluded records: archived + B1 test task
+    makeTask({
+      id: 'archived_1',
+      displayCode: '99',
+      status: 'Chờ duyệt',
+      dueDate: '2026-01-01',
+      archivedAt: '2026-03-01T00:00:00.000Z',
+      sortOrder: 99,
+    }),
+    makeTask({
+      id: 'b1_test_1',
+      displayCode: 'T1',
+      status: 'Đang làm',
+      isTestRecord: true,
+      sortOrder: 100,
+    }),
+  ];
+
+  // 1. Exact math: total === sum of 5 statuses + missingStatus; archived & B1 excluded
+  const stats = computeOverviewStats(sampleTasks, refToday);
+  assert.equal(stats.total, 8);
+  assert.equal(stats.inProgress, 2);
+  assert.equal(stats.pendingApproval, 2);
+  assert.equal(stats.paused, 1);
+  assert.equal(stats.completed, 1);
+  assert.equal(stats.notStarted, 1);
+  assert.equal(stats.missingStatus, 1);
+  assert.equal(
+    stats.inProgress +
+      stats.pendingApproval +
+      stats.paused +
+      stats.completed +
+      stats.notStarted +
+      stats.missingStatus,
+    stats.total
+  );
+  assert.equal(stats.overdue, 2); // c1_1 and c1_2 only (completed p4 and archived excluded)
+  assert.equal(stats.flaggedTasks.map((t) => t.id).includes('p6'), true);
+  assert.equal(stats.flaggedTasks.some((t) => t.id === 'archived_1' || t.id === 'b1_test_1'), false);
+
+  // 2. Deduplicated watchlist + priority ordering (overdue earliest first -> pending approval -> code)
+  const adminWatchlist = buildOverviewWatchlist(sampleTasks, adminUser, refToday);
+  assert.equal(adminWatchlist.items.length, 3); // c1_2, c1_1, p2 (NO duplicate c1_1!)
+  assert.equal(adminWatchlist.overdueCount, 2);
+  assert.equal(adminWatchlist.pendingApprovalCount, 2);
+  assert.equal(adminWatchlist.overlapCount, 1);
+  assert.deepEqual(
+    adminWatchlist.items.map((i) => i.task.id),
+    ['c1_2', 'c1_1', 'p2']
+  );
+  // Overlap item c1_1 carries BOTH overdue and approval reasons on a single entry
+  const overlapItem = adminWatchlist.items.find((i) => i.task.id === 'c1_1')!;
+  assert.equal(overlapItem.isOverdue, true);
+  assert.equal(overlapItem.isPendingApproval, true);
+  assert.equal(overlapItem.canCurrentUserApprove, true);
+  assert.equal(overlapItem.reasons.length, 2);
+  assert.equal(overlapItem.reasons[0].kind, 'overdue');
+  assert.equal(overlapItem.reasons[1].kind, 'pending_approval_action');
+  assert.equal(overlapItem.reasons[1].label, 'Cần bạn duyệt');
+
+  // 3. RBAC isolation: Member without canApprove & Viewer see same items, NEVER "Cần bạn duyệt"
+  const memberWatchlist = buildOverviewWatchlist(sampleTasks, memberUser, refToday);
+  const viewerWatchlist = buildOverviewWatchlist(sampleTasks, viewerUser, refToday);
+  assert.deepEqual(
+    memberWatchlist.items.map((i) => i.task.id),
+    adminWatchlist.items.map((i) => i.task.id)
+  );
+  assert.deepEqual(
+    viewerWatchlist.items.map((i) => i.task.id),
+    adminWatchlist.items.map((i) => i.task.id)
+  );
+  assert.equal(
+    memberWatchlist.items.some((i) => i.canCurrentUserApprove),
+    false
+  );
+  assert.equal(
+    viewerWatchlist.items.some((i) => i.canCurrentUserApprove),
+    false
+  );
+  assert.equal(
+    memberWatchlist.items.some((i) =>
+      i.reasons.some((r) => r.label === 'Cần bạn duyệt')
+    ),
+    false
+  );
+  assert.equal(
+    viewerWatchlist.items.some((i) =>
+      i.reasons.some((r) => r.label === 'Cần bạn duyệt')
+    ),
+    false
+  );
+
+  // 4. UI & navigation integration contracts
+  const freshOverview = fs.readFileSync(
+    path.join(rootDir, 'src/components/OverviewView.tsx'),
+    'utf8'
+  );
+  const freshTasksView = fs.readFileSync(
+    path.join(rootDir, 'src/components/TasksView.tsx'),
+    'utf8'
+  );
+  const freshApp = fs.readFileSync(path.join(rootDir, 'src/App.tsx'), 'utf8');
+
+  // Overview uses pure helpers, 5 statuses + missingStatus + overdue filter preset
+  assert.equal(freshOverview.includes('computeOverviewStats(tasks)'), true);
+  assert.equal(freshOverview.includes('buildOverviewWatchlist(tasks, currentUser)'), true);
+  assert.equal(freshOverview.includes("status: 'Chưa bắt đầu'"), true);
+  assert.equal(freshOverview.includes("status: '__unset__'"), true);
+  assert.equal(freshOverview.includes('overdueOnly: true'), true);
+  assert.equal(freshOverview.includes('Thiếu trạng thái ('), true);
+  assert.equal(freshOverview.includes('Công việc cần theo dõi'), true);
+  // Eliminates old unbalanced 50/50 grid and duplicate overdue+pending addition
+  assert.equal(freshOverview.includes('pendingApprovalTasks.length + overdueTasks.length'), false);
+  assert.equal(freshOverview.includes('Cần phê duyệt'), false);
+  // Mobile expansion controls & short review heading
+  assert.equal(freshOverview.includes('MOBILE_WATCHLIST_LIMIT = 3'), true);
+  assert.equal(freshOverview.includes('Xem thêm {hiddenWatchlistCount} việc'), true);
+  assert.equal(freshOverview.includes('Thu gọn'), true);
+  assert.equal(freshOverview.includes('Cần rà soát ({stats.flaggedTasks.length})'), true);
+  // Parent group smart navigation actions
+  assert.equal(freshOverview.includes('Xem việc con'), true);
+  assert.equal(freshOverview.includes('focusParentId: parent.id'), true);
+  assert.equal(freshOverview.includes('Chi tiết'), true);
+  // TasksView & App support overdueOnly and focusParentId presets
+  assert.equal(freshTasksView.includes('initialOverdueOnly'), true);
+  assert.equal(freshTasksView.includes('initialFocusParentId'), true);
+  assert.equal(freshTasksView.includes('if (overdueOnly && !isTaskOverdue(task))'), true);
+  assert.equal(freshTasksView.includes('id={`task-group-${parent.id}`}'), true);
+  assert.equal(freshApp.includes('initialOverdueOnly={tasksFilterPreset.overdueOnly ?? false}'), true);
+  assert.equal(freshApp.includes('initialFocusParentId={tasksFilterPreset.focusParentId}'), true);
+});
+

@@ -55,6 +55,8 @@ interface TasksViewProps {
   initialStatusFilter?: string;
   initialCategoryFilter?: string;
   initialReviewOnly?: boolean;
+  initialOverdueOnly?: boolean;
+  initialFocusParentId?: string;
   onSelectTask: (taskId: string) => void;
   onOpenNewTask: (defaultParentId?: string | null) => void;
   onNavigateToDocuments?: () => void;
@@ -72,6 +74,8 @@ export const TasksView: React.FC<TasksViewProps> = ({
   initialStatusFilter = 'all',
   initialCategoryFilter = 'all',
   initialReviewOnly = false,
+  initialOverdueOnly = false,
+  initialFocusParentId,
   onSelectTask,
   onOpenNewTask,
   onNavigateToDocuments,
@@ -88,12 +92,21 @@ export const TasksView: React.FC<TasksViewProps> = ({
   );
   const [assigneeFilter, setAssigneeFilter] = useState<string>('all');
   const [reviewOnly, setReviewOnly] = useState<boolean>(initialReviewOnly);
+  const [overdueOnly, setOverdueOnly] = useState<boolean>(initialOverdueOnly);
   const [showArchived, setShowArchived] = useState<boolean>(false);
-  const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>({
-    tbhgn_3: true,
-    tbhgn_4: true,
-    tbhgn_5: true,
-  });
+  const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>(
+    () =>
+      initialFocusParentId
+        ? { [initialFocusParentId]: true }
+        : {
+            tbhgn_3: true,
+            tbhgn_4: true,
+            tbhgn_5: true,
+          }
+  );
+  const [focusedParentId, setFocusedParentId] = useState<string | null>(
+    initialFocusParentId ?? null
+  );
   const [filterExpansionOverrides, setFilterExpansionOverrides] = useState<
     Record<string, boolean>
   >({});
@@ -189,16 +202,45 @@ export const TasksView: React.FC<TasksViewProps> = ({
     statusFilter !== 'all' ||
     categoryFilter !== 'all' ||
     assigneeFilter !== 'all' ||
-    reviewOnly;
+    reviewOnly ||
+    overdueOnly;
 
-  const filterSignature = `${searchQuery.trim().toLowerCase()}|${statusFilter}|${categoryFilter}|${assigneeFilter}|${reviewOnly ? '1' : '0'}`;
+  const filterSignature = `${searchQuery.trim().toLowerCase()}|${statusFilter}|${categoryFilter}|${assigneeFilter}|${reviewOnly ? '1' : '0'}|${overdueOnly ? '1' : '0'}`;
 
   useEffect(() => {
     setFilterExpansionOverrides({});
   }, [filterSignature]);
 
+  useEffect(() => {
+    if (!initialFocusParentId) return;
+    const raf = window.requestAnimationFrame(() => {
+      const target = document.getElementById(
+        `task-group-${initialFocusParentId}`
+      );
+      if (target) {
+        const prefersReduced =
+          typeof window !== 'undefined' &&
+          window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        target.scrollIntoView({
+          behavior: prefersReduced ? 'auto' : 'smooth',
+          block: 'start',
+        });
+      }
+    });
+    const timer = window.setTimeout(() => {
+      setFocusedParentId(null);
+    }, 2200);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
+    };
+  }, [initialFocusParentId]);
+
   const hasChildRestrictingFilter =
-    statusFilter !== 'all' || assigneeFilter !== 'all' || reviewOnly;
+    statusFilter !== 'all' ||
+    assigneeFilter !== 'all' ||
+    reviewOnly ||
+    overdueOnly;
 
   const matchesFilter = (task: TaskItem): boolean => {
     const resolved = resolveTaskAssignees(task, members);
@@ -255,6 +297,10 @@ export const TasksView: React.FC<TasksViewProps> = ({
     }
 
     if (reviewOnly && !getTaskDataReviewSummary(task).hasAnyIssue) {
+      return false;
+    }
+
+    if (overdueOnly && !isTaskOverdue(task)) {
       return false;
     }
 
@@ -321,6 +367,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
     categoryFilter,
     assigneeFilter,
     reviewOnly,
+    overdueOnly,
     visiblePool,
     categories,
     members,
@@ -413,6 +460,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
     setCategoryFilter('all');
     setAssigneeFilter('all');
     setReviewOnly(false);
+    setOverdueOnly(false);
   };
 
   useEffect(() => {
@@ -612,11 +660,22 @@ export const TasksView: React.FC<TasksViewProps> = ({
       });
     }
 
+    if (overdueOnly) {
+      chips.push({
+        key: 'overdue',
+        label: 'Quá hạn',
+        toneClass:
+          'bg-chu-sa-soft border-chu-sa-border text-chu-sa hover:bg-chu-sa/15',
+        onRemove: () => setOverdueOnly(false),
+      });
+    }
+
     return chips;
   }, [
     statusFilter,
     categoryFilter,
     assigneeFilter,
+    overdueOnly,
     categories,
     assigneeOptions,
     members,
@@ -1640,6 +1699,19 @@ export const TasksView: React.FC<TasksViewProps> = ({
                 việc
               </div>
 
+              {overdueOnly && (
+                <button
+                  type="button"
+                  onClick={() => setOverdueOnly(false)}
+                  title="Bỏ lọc việc quá hạn"
+                  className="inline-flex items-center justify-center gap-1.5 px-2.5 py-2 text-xs font-semibold rounded-lg bg-chu-sa-soft border border-chu-sa-border text-chu-sa hover:bg-chu-sa/15 transition-colors whitespace-nowrap min-h-[40px]"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  <span>Đang lọc: Quá hạn</span>
+                  <X className="w-3.5 h-3.5 shrink-0" />
+                </button>
+              )}
+
               {hasActiveFilter && (
                 <button
                   type="button"
@@ -1834,9 +1906,12 @@ export const TasksView: React.FC<TasksViewProps> = ({
               return (
                 <section
                   key={parent.id}
+                  id={`task-group-${parent.id}`}
                   aria-label={`Nhóm công việc ${parent.displayCode}: ${parent.title}`}
-                  className={`relative bg-white border rounded-2xl shadow-[0_1px_3px_rgba(20,36,63,0.03),0_6px_18px_-14px_rgba(20,36,63,0.12)] transition-[border-color,box-shadow] duration-150 ${
-                    isExpanded
+                  className={`relative bg-white border rounded-2xl scroll-mt-24 shadow-[0_1px_3px_rgba(20,36,63,0.03),0_6px_18px_-14px_rgba(20,36,63,0.12)] transition-[border-color,box-shadow] duration-150 ${
+                    focusedParentId === parent.id
+                      ? 'border-minh-kim ring-2 ring-minh-kim/50'
+                      : isExpanded
                       ? 'border-[#D5D1C8]'
                       : 'border-[#E5DFD2] hover:border-[#CFC6B4]'
                   } ${hasOpenPopoverInGroup ? 'z-20' : ''}`}

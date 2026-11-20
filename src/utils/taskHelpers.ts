@@ -1328,4 +1328,232 @@ export function resolveParentExpandedState(params: {
   return Boolean(expandedParents[parentId]);
 }
 
+export interface OverviewStatsSummary {
+  activeTasks: TaskItem[];
+  parentTasks: TaskItem[];
+  childTasks: TaskItem[];
+  total: number;
+  inProgress: number;
+  pendingApproval: number;
+  paused: number;
+  completed: number;
+  notStarted: number;
+  missingStatus: number;
+  overdue: number;
+  tasksWithDueDate: number;
+  flaggedTasks: TaskItem[];
+  completionPercent: number;
+}
 
+/**
+ * Computes exact project-wide statistics for the Smart Overview Dashboard.
+ * Strictly excludes archived and B1 test tasks, keeps status === null
+ * separate from "Chưa bắt đầu", and guarantees:
+ * total === inProgress + pendingApproval + paused + completed + notStarted + missingStatus
+ * for all valid TaskStatus | null records.
+ */
+export function computeOverviewStats(
+  tasks: TaskItem[],
+  referenceDate?: Date
+): OverviewStatsSummary {
+  const activeTasks = tasks.filter((t) => !t.archivedAt && !isB1TestTask(t));
+  const parentTasks = activeTasks
+    .filter((t) => t.parentId === null)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  const childTasks = activeTasks.filter((t) => t.parentId !== null);
+
+  let inProgress = 0;
+  let pendingApproval = 0;
+  let paused = 0;
+  let completed = 0;
+  let notStarted = 0;
+  let missingStatus = 0;
+  let overdue = 0;
+  let tasksWithDueDate = 0;
+  const flaggedTasks: TaskItem[] = [];
+
+  for (const task of activeTasks) {
+    if (task.status === 'Đang làm') {
+      inProgress += 1;
+    } else if (task.status === 'Chờ duyệt') {
+      pendingApproval += 1;
+    } else if (task.status === 'Tạm dừng') {
+      paused += 1;
+    } else if (task.status === 'Hoàn thành') {
+      completed += 1;
+    } else if (task.status === 'Chưa bắt đầu') {
+      notStarted += 1;
+    } else if (task.status === null) {
+      missingStatus += 1;
+    }
+
+    if (task.dueDate) {
+      tasksWithDueDate += 1;
+    }
+    if (isTaskOverdue(task, referenceDate)) {
+      overdue += 1;
+    }
+    if (getTaskDataReviewSummary(task).hasAnyIssue) {
+      flaggedTasks.push(task);
+    }
+  }
+
+  flaggedTasks.sort((a, b) => {
+    const byCode = a.displayCode.localeCompare(b.displayCode, 'vi', {
+      numeric: true,
+      sensitivity: 'base',
+    });
+    if (byCode !== 0) return byCode;
+    return a.sortOrder - b.sortOrder;
+  });
+
+  const total = activeTasks.length;
+  const completionPercent =
+    total > 0 ? Math.round((completed / total) * 100) : 0;
+
+  return {
+    activeTasks,
+    parentTasks,
+    childTasks,
+    total,
+    inProgress,
+    pendingApproval,
+    paused,
+    completed,
+    notStarted,
+    missingStatus,
+    overdue,
+    tasksWithDueDate,
+    flaggedTasks,
+    completionPercent,
+  };
+}
+
+export type OverviewWatchlistReasonKind =
+  | 'overdue'
+  | 'pending_approval_action'
+  | 'pending_approval';
+
+export interface OverviewWatchlistReason {
+  kind: OverviewWatchlistReasonKind;
+  label: string;
+}
+
+export interface OverviewWatchlistItem {
+  task: TaskItem;
+  isOverdue: boolean;
+  isPendingApproval: boolean;
+  canCurrentUserApprove: boolean;
+  reasons: OverviewWatchlistReason[];
+}
+
+export interface OverviewWatchlistResult {
+  items: OverviewWatchlistItem[];
+  overdueCount: number;
+  pendingApprovalCount: number;
+  overlapCount: number;
+}
+
+/**
+ * Builds the deduplicated "Công việc cần theo dõi" list from overdue and
+ * "Chờ duyệt" active tasks.
+ *
+ * - Never duplicates a taskId when a task is both overdue and pending approval.
+ * - Priority order: 1) Overdue (earliest dueDate first), 2) Chờ duyệt, 3) displayCode / sortOrder.
+ * - RBAC-safe: only marks "Cần bạn duyệt" when canUserApproveTask(currentUser, task) is true;
+ *   never suggests approval duties to non-approvers.
+ */
+export function buildOverviewWatchlist(
+  tasks: TaskItem[],
+  currentUser: ProjectMember,
+  referenceDate?: Date
+): OverviewWatchlistResult {
+  const activeTasks = tasks.filter((t) => !t.archivedAt && !isB1TestTask(t));
+  const seenIds = new Set<string>();
+  const items: OverviewWatchlistItem[] = [];
+  let overdueCount = 0;
+  let pendingApprovalCount = 0;
+  let overlapCount = 0;
+
+  for (const task of activeTasks) {
+    if (seenIds.has(task.id)) continue;
+
+    const overdue = isTaskOverdue(task, referenceDate);
+    const pendingApproval = task.status === 'Chờ duyệt';
+
+    if (!overdue && !pendingApproval) continue;
+
+    seenIds.add(task.id);
+    if (overdue) overdueCount += 1;
+    if (pendingApproval) pendingApprovalCount += 1;
+    if (overdue && pendingApproval) overlapCount += 1;
+
+    const canCurrentUserApprove =
+      pendingApproval && canUserApproveTask(currentUser, task);
+
+    const reasons: OverviewWatchlistReason[] = [];
+    if (overdue) {
+      reasons.push({
+        kind: 'overdue',
+        label: task.dueDate
+          ? `Quá hạn (${formatShortDate(task.dueDate)})`
+          : 'Quá hạn',
+      });
+    }
+    if (pendingApproval) {
+      if (canCurrentUserApprove) {
+        reasons.push({
+          kind: 'pending_approval_action',
+          label: 'Cần bạn duyệt',
+        });
+      } else {
+        reasons.push({
+          kind: 'pending_approval',
+          label: 'Đang chờ duyệt',
+        });
+      }
+    }
+
+    items.push({
+      task,
+      isOverdue: overdue,
+      isPendingApproval: pendingApproval,
+      canCurrentUserApprove,
+      reasons,
+    });
+  }
+
+  items.sort((a, b) => {
+    // 1. Overdue first
+    if (a.isOverdue !== b.isOverdue) {
+      return a.isOverdue ? -1 : 1;
+    }
+    // Among overdue tasks, earliest due date first
+    if (a.isOverdue && b.isOverdue) {
+      const dueA = a.task.dueDate ?? '';
+      const dueB = b.task.dueDate ?? '';
+      if (dueA !== dueB) return dueA.localeCompare(dueB);
+    }
+    // 2. Pending approval next
+    if (a.isPendingApproval !== b.isPendingApproval) {
+      return a.isPendingApproval ? -1 : 1;
+    }
+    // 3. Stable displayCode + sortOrder fallback
+    const byCode = a.task.displayCode.localeCompare(b.task.displayCode, 'vi', {
+      numeric: true,
+      sensitivity: 'base',
+    });
+    if (byCode !== 0) return byCode;
+    if (a.task.sortOrder !== b.task.sortOrder) {
+      return a.task.sortOrder - b.task.sortOrder;
+    }
+    return a.task.id.localeCompare(b.task.id);
+  });
+
+  return {
+    items,
+    overdueCount,
+    pendingApprovalCount,
+    overlapCount,
+  };
+}
