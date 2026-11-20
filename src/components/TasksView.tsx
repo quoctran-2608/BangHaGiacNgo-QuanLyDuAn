@@ -631,7 +631,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
 
     if (resolved.isUnassigned) {
       return (
-        <span className="text-[12.5px] text-[#8E96A3]">
+        <span className="text-[12.5px] text-[#647082]">
           Chưa phân công
         </span>
       );
@@ -653,7 +653,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
             <span>
               {visibleMembers.map((am, idx) => (
                 <React.Fragment key={am.uid}>
-                  {idx > 0 && <span className="text-[#8E96A3]">, </span>}
+                  {idx > 0 && <span className="text-[#6E7889]">, </span>}
                   <span
                     className={
                       am.isActive ? 'text-huyen-lam' : 'text-[#7D8796]'
@@ -679,7 +679,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
           (directoryUnavailable ? (
             <span
               title="Chưa tải được danh bạ thành viên"
-              className="text-[12.5px] text-[#8E96A3]"
+              className="text-[12.5px] text-[#647082]"
             >
               {visibleMembers.length > 0
                 ? `+${resolved.unknownUidCount}`
@@ -1835,9 +1835,9 @@ export const TasksView: React.FC<TasksViewProps> = ({
                 <section
                   key={parent.id}
                   aria-label={`Nhóm công việc ${parent.displayCode}: ${parent.title}`}
-                  className={`relative bg-trang-nga border rounded-2xl shadow-[0_1px_3px_rgba(20,36,63,0.03),0_6px_18px_-14px_rgba(20,36,63,0.12)] transition-[border-color,box-shadow] duration-150 ${
+                  className={`relative bg-white border rounded-2xl shadow-[0_1px_3px_rgba(20,36,63,0.03),0_6px_18px_-14px_rgba(20,36,63,0.12)] transition-[border-color,box-shadow] duration-150 ${
                     isExpanded
-                      ? 'border-[#D5CBB7]'
+                      ? 'border-[#D5D1C8]'
                       : 'border-[#E5DFD2] hover:border-[#CFC6B4]'
                   } ${hasOpenPopoverInGroup ? 'z-20' : ''}`}
                 >
@@ -1857,8 +1857,8 @@ export const TasksView: React.FC<TasksViewProps> = ({
                     onClick={handleParentPrimaryAction}
                     className={`px-3.5 py-3 sm:px-5 sm:py-4 transition-colors cursor-pointer ${
                       isExpanded
-                        ? 'bg-[#FCFBF6] hover:bg-[#FAF8F2]'
-                        : 'bg-trang-nga hover:bg-[#FCFBF8] rounded-b-2xl'
+                        ? 'bg-[#FAF9F6] hover:bg-[#F6F4EE]'
+                        : 'bg-white hover:bg-[#FCFBF8] rounded-b-2xl'
                     }`}
                   >
                     <div className={DESKTOP_GRID_COLS}>
@@ -2248,7 +2248,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                       </div>
                       {parent.nextStep && (
                         <div className="text-[13px] text-[#4D596B] leading-[1.45] break-words">
-                          <span className="text-[#8A94A3] font-medium">
+                          <span className="text-[#606B7D] font-medium">
                             Tiếp theo:{' '}
                           </span>
                           {parent.nextStep}
@@ -2436,7 +2436,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                               </div>
                               {child.nextStep && (
                                 <div className="text-[13px] text-[#4D596B] leading-[1.45] break-words">
-                                  <span className="text-[#8A94A3] font-medium">
+                                  <span className="text-[#606B7D] font-medium">
                                     Tiếp theo:{' '}
                                   </span>
                                   {child.nextStep}

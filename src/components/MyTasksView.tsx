@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertCircle,
   AlertTriangle,
   ArrowRight,
   BookOpen,
@@ -391,15 +392,12 @@ export const MyTasksView: React.FC<MyTasksViewProps> = ({
       quickFeedback?.taskId === task.id ? quickFeedback : null;
     const hasOpenPopover = openLinkMenu?.taskId === task.id;
 
+    // Pure white default card surface; never tint whole card yellow for attention flags
     const cardSurfaceClass =
-      attention.needsAttention && task.status !== 'Hoàn thành'
-        ? 'bg-[#FFFCF5] border-[#E6CFA0] hover:border-[#CFA862]'
-        : 'bg-white border-nga-xam hover:border-[#C7BFB0]';
+      'bg-white border-[#E5DFD2] hover:border-[#CFC6B4]';
 
-    const topAccentColor =
-      attention.needsAttention && task.status !== 'Hoàn thành'
-        ? '#D9A84E'
-        : statusMeta.border;
+    // Top hairline strictly reflects actual workflow status via STATUS_META / UNSET_STATUS_META
+    const topAccentColor = statusMeta.border;
 
     const renderGroupLinkTrigger = (
       links: typeof validRefLinks,
@@ -525,7 +523,7 @@ export const MyTasksView: React.FC<MyTasksViewProps> = ({
           hasOpenPopover ? 'z-20' : ''
         }`}
       >
-        {/* Subtle top hairline matching workflow/attention state */}
+        {/* Subtle top hairline matching actual workflow status */}
         <div
           aria-hidden="true"
           className="h-[2.5px] w-full rounded-t-[11px] overflow-hidden"
@@ -572,13 +570,28 @@ export const MyTasksView: React.FC<MyTasksViewProps> = ({
 
                 {task.dueDate && (
                   <span
-                    className={`inline-flex items-center gap-1 text-xs font-mono-tabular ${
+                    className={
                       attention.isOverdue
-                        ? 'text-[#8B322F] font-semibold'
-                        : 'text-ink-muted'
-                    }`}
+                        ? 'inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-chu-sa-border bg-chu-sa-soft text-chu-sa text-xs font-semibold font-mono-tabular whitespace-nowrap'
+                        : 'inline-flex items-center gap-1 text-xs font-mono-tabular text-ink-muted whitespace-nowrap'
+                    }
+                    title={
+                      attention.isOverdue
+                        ? 'Công việc đã quá hạn xử lý'
+                        : undefined
+                    }
                   >
-                    <Calendar className="w-3.5 h-3.5 shrink-0" />
+                    {attention.isOverdue ? (
+                      <AlertTriangle
+                        className="w-3.5 h-3.5 shrink-0"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <Calendar
+                        className="w-3.5 h-3.5 shrink-0"
+                        aria-hidden="true"
+                      />
+                    )}
                     <span>
                       Hạn {formatShortDate(task.dueDate)}
                       {attention.isOverdue ? ' · Quá hạn' : ''}
@@ -587,8 +600,8 @@ export const MyTasksView: React.FC<MyTasksViewProps> = ({
                 )}
 
                 {attention.pendingApprovalAction && (
-                  <span className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-minh-kim-ink">
-                    <Clock3 className="w-3.5 h-3.5 shrink-0" />
+                  <span className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-minh-kim-ink whitespace-nowrap">
+                    <Clock3 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                     <span>Cần bạn duyệt</span>
                   </span>
                 )}
@@ -842,34 +855,31 @@ export const MyTasksView: React.FC<MyTasksViewProps> = ({
               </div>
             ) : (
               <div className="flex-1 min-w-0 flex items-start gap-2">
-                <ArrowRight
-                  className={`w-4 h-4 shrink-0 mt-0.5 ${
-                    attention.missingNextStep
-                      ? 'text-[#B7791F]'
-                      : 'text-lam-sang-ink'
-                  }`}
-                  aria-hidden="true"
-                />
-                <div className="min-w-0 flex-1 text-[13px] leading-snug">
-                  <span className="font-semibold text-huyen-lam mr-1.5">
+                {attention.missingNextStep ? (
+                  <AlertCircle
+                    className="w-4 h-4 shrink-0 mt-0.5 text-[#B7791F]"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <ArrowRight
+                    className="w-4 h-4 shrink-0 mt-0.5 text-lam-sang-ink"
+                    aria-hidden="true"
+                  />
+                )}
+                <div className="min-w-0 flex-1 text-[13px] leading-snug flex flex-wrap items-baseline gap-x-1.5 gap-y-1">
+                  <span className="font-semibold text-huyen-lam">
                     Bước tiếp theo:
                   </span>
                   {task.nextStep ? (
                     <span className="text-[#27364B] font-medium break-words">
                       {task.nextStep}
                     </span>
-                  ) : (
-                    <span
-                      className={`italic ${
-                        attention.missingNextStep
-                          ? 'text-[#8A5600] font-medium'
-                          : 'text-ink-muted'
-                      }`}
-                    >
-                      {attention.missingNextStep
-                        ? 'Chưa có — nên bổ sung để tiếp tục xử lý'
-                        : 'Chưa ghi nhận'}
+                  ) : attention.missingNextStep ? (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-[#FFF8E7] border border-[#EBD29B] text-[#7C4D00] text-xs font-medium leading-snug">
+                      Chưa có — nên bổ sung bước tiếp theo
                     </span>
+                  ) : (
+                    <span className="italic text-ink-muted">Chưa ghi nhận</span>
                   )}
                 </div>
               </div>

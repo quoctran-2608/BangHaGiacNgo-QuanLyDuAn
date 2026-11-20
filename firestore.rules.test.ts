@@ -3419,13 +3419,67 @@ test('Case 16: Smart Parent-Child Navigation V2.0 — child attention summary, f
   assert.equal(freshTasksView.includes('setMobileFilterOpen(false);'), true);
   // Sticky quick-filter popover constrained above mobile bottom bar
   assert.equal(freshTasksView.includes('max-h-[calc(100dvh-148px)] overflow-y-auto'), true);
-  // Expanded parent header subtle visual distinction
-  assert.equal(freshTasksView.includes("bg-[#FCFBF6] hover:bg-[#FAF8F2]"), true);
+  // Expanded parent header subtle non-yellow visual distinction
+  assert.equal(freshTasksView.includes("bg-[#FAF9F6] hover:bg-[#F6F4EE]"), true);
 });
 
+test('Case 17: Semantic Color Harmony V2.3 — pure white My Work cards, status-driven top hairline, scoped attention cues, and TasksView surface/contrast harmony', () => {
+  // 1. STATUS_META / getStatusMeta preserves standard 5 status colors + unset hairline
+  assert.equal(getStatusMeta('Đang làm').bg, '#BDD7EE');
+  assert.equal(getStatusMeta('Đang làm').border, '#9CC2E5');
+  assert.equal(getStatusMeta('Chờ duyệt').bg, '#FFE699');
+  assert.equal(getStatusMeta('Chờ duyệt').border, '#E8C868');
+  assert.equal(getStatusMeta('Tạm dừng').bg, '#FFC7CE');
+  assert.equal(getStatusMeta('Tạm dừng').border, '#F0A4AE');
+  assert.equal(getStatusMeta('Hoàn thành').bg, '#A9D08E');
+  assert.equal(getStatusMeta('Hoàn thành').border, '#8BBC6B');
+  assert.equal(getStatusMeta('Chưa bắt đầu').bg, '#EDEDED');
+  assert.equal(getStatusMeta('Chưa bắt đầu').border, '#D4D4D4');
+  assert.equal(getStatusMeta(null).border, '#D9A84E');
 
+  // 2. MyTasksView V2.3 contracts: crisp white cards, no yellow card flood, status hairline
+  const freshMyTasksView = fs.readFileSync(
+    path.join(rootDir, 'src/components/MyTasksView.tsx'),
+    'utf8'
+  );
+  assert.equal(freshMyTasksView.includes('#FFFCF5'), false);
+  assert.equal(freshMyTasksView.includes('#E6CFA0'), false);
+  assert.equal(freshMyTasksView.includes("bg-white border-[#E5DFD2] hover:border-[#CFC6B4]"), true);
+  assert.equal(freshMyTasksView.includes('const topAccentColor = statusMeta.border;'), true);
+  assert.equal(freshMyTasksView.includes("? '#D9A84E'"), false);
 
+  // 3. Scoped attention indicators in MyTasksView
+  // A. Missing next step: subtle warm amber inline reminder right on Bước tiếp theo row
+  assert.equal(
+    freshMyTasksView.includes('Chưa có — nên bổ sung bước tiếp theo'),
+    true
+  );
+  assert.equal(
+    freshMyTasksView.includes('bg-[#FFF8E7] border border-[#EBD29B] text-[#7C4D00]'),
+    true
+  );
+  // B. Overdue: Chu Sa cue right at due date without altering task status
+  assert.equal(
+    freshMyTasksView.includes('border-chu-sa-border bg-chu-sa-soft text-chu-sa'),
+    true
+  );
+  assert.equal(freshMyTasksView.includes("attention.isOverdue ? ' · Quá hạn' : ''"), true);
+  // C. Pending user approval: compact inline label (no duplicate yellow pill box)
+  assert.equal(freshMyTasksView.includes('Cần bạn duyệt'), true);
+  // D. Data review: dedicated ReviewBadge
+  assert.equal(freshMyTasksView.includes('<ReviewBadge task={task} />'), true);
 
-
-
-
+  // 4. TasksView V2.3 light polish contracts
+  const freshTasksView = fs.readFileSync(
+    path.join(rootDir, 'src/components/TasksView.tsx'),
+    'utf8'
+  );
+  // Parent top hairline remains category-driven (distinct from My Work status hairline)
+  assert.equal(freshTasksView.includes('linear-gradient(90deg, ${catTheme.accent} 0%'), true);
+  // Parent closed surface is crisp white; expanded child well stays soft Ngà Thiền
+  assert.equal(freshTasksView.includes('relative bg-white border rounded-2xl'), true);
+  assert.equal(freshTasksView.includes('bg-[#FAF8F3] divide-y divide-[#EFEAE0]'), true);
+  // Improved contrast on muted secondary labels
+  assert.equal(freshTasksView.includes('text-[12.5px] text-[#647082]'), true);
+  assert.equal(freshTasksView.includes('text-[#606B7D] font-medium'), true);
+});
