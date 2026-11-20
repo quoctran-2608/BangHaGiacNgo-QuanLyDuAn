@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
+  AlertTriangle,
   Archive,
   ArrowUp,
   BookOpen,
@@ -8,12 +9,14 @@ import {
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
+  Clock3,
   CornerDownRight,
   ExternalLink,
   FileCheck2,
   Library,
   Link2Off,
-  ListChecks,
+  ListTree,
+  PanelRightOpen,
   Plus,
   RotateCcw,
   Search,
@@ -34,7 +37,9 @@ import {
   getTaskDataReviewSummary,
   isB1TestTask,
   isTaskOverdue,
+  resolveParentExpandedState,
   resolveTaskAssignees,
+  summarizeChildAttention,
 } from '../utils/taskHelpers';
 import { isReplacedTemporaryAccountEmail } from '../utils/memberMapping';
 import { CategoryChip } from './CategoryChip';
@@ -89,6 +94,9 @@ export const TasksView: React.FC<TasksViewProps> = ({
     tbhgn_4: true,
     tbhgn_5: true,
   });
+  const [filterExpansionOverrides, setFilterExpansionOverrides] = useState<
+    Record<string, boolean>
+  >({});
 
   const filterBarRef = useRef<HTMLDivElement | null>(null);
   const columnHeaderRef = useRef<HTMLDivElement | null>(null);
@@ -180,6 +188,12 @@ export const TasksView: React.FC<TasksViewProps> = ({
     categoryFilter !== 'all' ||
     assigneeFilter !== 'all' ||
     reviewOnly;
+
+  const filterSignature = `${searchQuery.trim().toLowerCase()}|${statusFilter}|${categoryFilter}|${assigneeFilter}|${reviewOnly ? '1' : '0'}`;
+
+  useEffect(() => {
+    setFilterExpansionOverrides({});
+  }, [filterSignature]);
 
   const hasChildRestrictingFilter =
     statusFilter !== 'all' || assigneeFilter !== 'all' || reviewOnly;
@@ -315,27 +329,75 @@ export const TasksView: React.FC<TasksViewProps> = ({
     [filteredTree]
   );
 
+  const getIsExpanded = (
+    parentId: string,
+    hasVisibleChildren: boolean,
+    autoExpand: boolean
+  ) =>
+    resolveParentExpandedState({
+      parentId,
+      hasVisibleChildren,
+      hasActiveFilter,
+      autoExpand,
+      expandedParents,
+      filterOverrides: filterExpansionOverrides,
+    });
+
   const allExpanded =
     parentsWithVisibleChildren.length > 0 &&
-    parentsWithVisibleChildren.every(
-      (item) => item.autoExpand || Boolean(expandedParents[item.parent.id])
+    parentsWithVisibleChildren.every((item) =>
+      getIsExpanded(item.parent.id, item.children.length > 0, item.autoExpand)
     );
 
   const visibleChildCount = useMemo(
     () => filteredTree.reduce((sum, item) => sum + item.children.length, 0),
     [filteredTree]
   );
+  const expandedChildCount = useMemo(
+    () =>
+      filteredTree.reduce(
+        (sum, item) =>
+          sum +
+          (getIsExpanded(
+            item.parent.id,
+            item.children.length > 0,
+            item.autoExpand
+          )
+            ? item.children.length
+            : 0),
+        0
+      ),
+    [filteredTree, hasActiveFilter, expandedParents, filterExpansionOverrides]
+  );
   const visibleTotalCount = filteredTree.length + visibleChildCount;
 
-  const toggleParent = (parentId: string) => {
+  const toggleParent = (parentId: string, currentExpanded: boolean) => {
+    const nextState = !currentExpanded;
+    if (hasActiveFilter) {
+      setFilterExpansionOverrides((prev) => ({
+        ...prev,
+        [parentId]: nextState,
+      }));
+      return;
+    }
     setExpandedParents((prev) => ({
       ...prev,
-      [parentId]: !prev[parentId],
+      [parentId]: nextState,
     }));
   };
 
   const toggleExpandAll = () => {
     const nextState = !allExpanded;
+    if (hasActiveFilter) {
+      const nextOverrides: Record<string, boolean> = {
+        ...filterExpansionOverrides,
+      };
+      parentsWithVisibleChildren.forEach(({ parent }) => {
+        nextOverrides[parent.id] = nextState;
+      });
+      setFilterExpansionOverrides(nextOverrides);
+      return;
+    }
     const nextMap: Record<string, boolean> = { ...expandedParents };
     parentsWithVisibleChildren.forEach(({ parent }) => {
       nextMap[parent.id] = nextState;
@@ -932,7 +994,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
               </button>
 
               {/* 5. Expand / Collapse All */}
-              {parentsWithVisibleChildren.length > 0 && !hasActiveFilter && (
+              {parentsWithVisibleChildren.length > 0 && (
                 <button
                   type="button"
                   tabIndex={showStickyBar ? 0 : -1}
@@ -1191,7 +1253,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
             </button>
           )}
 
-          {parentsWithVisibleChildren.length > 0 && !hasActiveFilter && (
+          {parentsWithVisibleChildren.length > 0 && (
             <button
               type="button"
               onClick={toggleExpandAll}
@@ -1408,13 +1470,28 @@ export const TasksView: React.FC<TasksViewProps> = ({
         ) : (
           <div className="space-y-3">
             {filteredTree.map(({ parent, children, autoExpand }) => {
-              const totalChildrenInParent =
-                (childrenByParent[parent.id] || []).length;
+              const allChildrenInParent = childrenByParent[parent.id] || [];
+              const totalChildrenInParent = allChildrenInParent.length;
               const hasChildren = children.length > 0;
-              const isExpanded =
-                hasChildren &&
-                (autoExpand || Boolean(expandedParents[parent.id]));
+              const isExpanded = getIsExpanded(
+                parent.id,
+                hasChildren,
+                autoExpand
+              );
+              const childrenRegionId = `task-children-${parent.id}`;
               const progress = computeParentProgress(parent.id, visiblePool);
+              const childAttention = hasChildren
+                ? summarizeChildAttention(
+                    hasActiveFilter ? children : allChildrenInParent
+                  )
+                : null;
+              const isFilteredChildSubset =
+                hasActiveFilter &&
+                hasChildren &&
+                children.length < totalChildrenInParent;
+              const subtaskCountLabel = isFilteredChildSubset
+                ? `${children.length}/${totalChildrenInParent} việc con phù hợp`
+                : `${totalChildrenInParent} việc con`;
               const effCat = getEffectiveCategory(
                 parent,
                 visiblePool,
@@ -1431,6 +1508,14 @@ export const TasksView: React.FC<TasksViewProps> = ({
               const hasOpenPopoverInGroup =
                 openLinkMenu?.taskId === parent.id ||
                 children.some((c) => c.id === openLinkMenu?.taskId);
+
+              const handleParentPrimaryAction = () => {
+                if (hasChildren) {
+                  toggleParent(parent.id, isExpanded);
+                } else {
+                  onSelectTask(parent.id);
+                }
+              };
 
               return (
                 <section
@@ -1451,7 +1536,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
 
                   {/* Parent Row */}
                   <div
-                    onClick={() => onSelectTask(parent.id)}
+                    onClick={handleParentPrimaryAction}
                     className={`px-3.5 py-3.5 sm:px-5 sm:py-4 bg-trang-nga hover:bg-[#FCFBF8] transition-colors cursor-pointer ${
                       isExpanded ? '' : 'rounded-b-2xl'
                     }`}
@@ -1471,21 +1556,26 @@ export const TasksView: React.FC<TasksViewProps> = ({
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                toggleParent(parent.id);
+                                toggleParent(parent.id, isExpanded);
                               }}
                               aria-expanded={isExpanded}
+                              aria-controls={childrenRegionId}
                               aria-label={
                                 isExpanded
-                                  ? `Thu gọn việc con của ${parent.displayCode}`
-                                  : `Mở rộng việc con của ${parent.displayCode}`
+                                  ? `Thu gọn ${subtaskCountLabel} của ${parent.displayCode}`
+                                  : `Mở rộng ${subtaskCountLabel} của ${parent.displayCode}`
                               }
-                              className="w-10 h-10 -my-1.5 flex items-center justify-center rounded-lg text-[#687385] hover:bg-[#F3EFE6] hover:text-huyen-lam transition-colors"
+                              className={`w-10 h-10 -my-1.5 flex items-center justify-center rounded-lg transition-colors focus-visible:outline-2 focus-visible:outline-lam-sang ${
+                                isExpanded
+                                  ? 'text-thanh-ngoc-ink bg-thanh-ngoc-soft/65 hover:bg-thanh-ngoc-soft'
+                                  : 'text-[#687385] hover:bg-[#F3EFE6] hover:text-huyen-lam'
+                              }`}
                             >
-                              {isExpanded ? (
-                                <ChevronDown className="w-4 h-4 shrink-0" />
-                              ) : (
-                                <ChevronRight className="w-4 h-4 shrink-0" />
-                              )}
+                              <ChevronRight
+                                className={`w-4 h-4 shrink-0 transition-transform duration-150 ${
+                                  isExpanded ? 'rotate-90' : ''
+                                }`}
+                              />
                             </button>
                           )}
                         </div>
@@ -1511,8 +1601,12 @@ export const TasksView: React.FC<TasksViewProps> = ({
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                onSelectTask(parent.id);
+                                handleParentPrimaryAction();
                               }}
+                              aria-expanded={hasChildren ? isExpanded : undefined}
+                              aria-controls={
+                                hasChildren ? childrenRegionId : undefined
+                              }
                               className="text-left flex-1 min-w-0 group focus-visible:outline-2 focus-visible:outline-lam-sang rounded-sm"
                             >
                               <div className="flex items-start gap-2.5">
@@ -1538,7 +1632,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                             </div>
                           </div>
 
-                          {/* 2. Standardized Visual Hierarchy: CategoryChip -> ReviewBadge -> Progress -> Links */}
+                          {/* 2. Standardized Visual Hierarchy: CategoryChip -> ReviewBadge -> Prominent Subtask Cluster & Chi tiết -> Links */}
                           <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-xs leading-5">
                             <CategoryChip
                               categoryId={effCat.categoryId}
@@ -1550,45 +1644,154 @@ export const TasksView: React.FC<TasksViewProps> = ({
 
                             <ReviewBadge task={parent} />
 
-                            {totalChildrenInParent > 0 && (
-                              <span className="inline-flex items-center gap-1.5 text-[#5E697A]">
-                                <ListChecks
-                                  className="w-3.5 h-3.5 shrink-0"
-                                  style={{
-                                    color: isParentDone
-                                      ? '#328578'
-                                      : catTheme.accent,
+                            {hasChildren && (
+                              <div className="inline-flex flex-wrap items-center gap-1.5 sm:gap-2">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleParent(parent.id, isExpanded);
                                   }}
-                                />
-                                <span
-                                  className={`font-mono-tabular font-semibold ${
-                                    isParentDone
-                                      ? 'text-thanh-ngoc-ink'
-                                      : 'text-huyen-lam'
+                                  aria-expanded={isExpanded}
+                                  aria-controls={childrenRegionId}
+                                  aria-label={
+                                    isExpanded
+                                      ? `Thu gọn ${subtaskCountLabel} của nhóm ${parent.displayCode}`
+                                      : `Xem ${subtaskCountLabel} của nhóm ${parent.displayCode}`
+                                  }
+                                  className={`inline-flex items-center gap-1.5 min-h-[32px] sm:min-h-[26px] px-2.5 py-0.5 rounded-lg border text-[11.5px] font-semibold transition-colors whitespace-nowrap focus-visible:outline-2 focus-visible:outline-lam-sang ${
+                                    isExpanded
+                                      ? 'bg-thanh-ngoc-soft border-thanh-ngoc/45 text-thanh-ngoc-ink'
+                                      : 'bg-thanh-ngoc-soft/75 border-thanh-ngoc/30 text-thanh-ngoc-ink hover:bg-thanh-ngoc-soft hover:border-thanh-ngoc/50'
                                   }`}
                                 >
+                                  <ListTree
+                                    className="w-3.5 h-3.5 shrink-0 text-thanh-ngoc"
+                                    aria-hidden="true"
+                                  />
+                                  <span className="tabular-nums">
+                                    {subtaskCountLabel}
+                                  </span>
+                                  {!isExpanded && (
+                                    <span className="hidden sm:inline text-[11px] font-normal text-thanh-ngoc-ink/80">
+                                      · Xem việc con
+                                    </span>
+                                  )}
+                                  <ChevronDown
+                                    className={`w-3 h-3 shrink-0 text-thanh-ngoc-ink/80 transition-transform duration-150 ${
+                                      isExpanded ? 'rotate-180' : ''
+                                    }`}
+                                    aria-hidden="true"
+                                  />
+                                </button>
+
+                                <span className="inline-flex items-center gap-1.5 text-[11.5px] text-[#5E697A] whitespace-nowrap">
+                                  <span
+                                    className={`font-mono-tabular font-semibold ${
+                                      isParentDone
+                                        ? 'text-thanh-ngoc-ink'
+                                        : 'text-huyen-lam'
+                                    }`}
+                                  >
+                                    {progress.completed}/{progress.total}
+                                  </span>
+                                  <span className="text-[#6A7485]">
+                                    hoàn thành
+                                  </span>
+                                  <span
+                                    aria-hidden="true"
+                                    className="w-12 h-1.5 rounded-full bg-[#EAE5D9] overflow-hidden inline-block"
+                                  >
+                                    <span
+                                      className="block h-full rounded-full transition-all"
+                                      style={{
+                                        width: `${progress.percentage}%`,
+                                        backgroundColor: isParentDone
+                                          ? '#328578'
+                                          : catTheme.accent,
+                                      }}
+                                    />
+                                  </span>
+                                </span>
+
+                                {!isExpanded &&
+                                  childAttention &&
+                                  childAttention.visibleSignals.length > 0 && (
+                                    <span
+                                      className="inline-flex flex-wrap items-center gap-1.5"
+                                      title={childAttention.tooltipText}
+                                    >
+                                      {childAttention.visibleSignals.map(
+                                        (signal) => {
+                                          const tone =
+                                            signal.kind === 'overdue'
+                                              ? 'bg-chu-sa-soft border-chu-sa-border text-chu-sa'
+                                              : signal.kind ===
+                                                'pending_approval'
+                                              ? 'bg-minh-kim-soft border-minh-kim-border text-minh-kim-ink'
+                                              : 'bg-[#FAF0EE] border-[#E4C2BE] text-[#8B322F]';
+                                          return (
+                                            <span
+                                              key={signal.kind}
+                                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[11px] font-medium whitespace-nowrap tabular-nums ${tone}`}
+                                            >
+                                              {signal.kind === 'overdue' && (
+                                                <Clock3
+                                                  className="w-3 h-3 shrink-0"
+                                                  aria-hidden="true"
+                                                />
+                                              )}
+                                              {signal.kind ===
+                                                'data_review' && (
+                                                <AlertTriangle
+                                                  className="w-3 h-3 shrink-0"
+                                                  aria-hidden="true"
+                                                />
+                                              )}
+                                              <span>{signal.label}</span>
+                                            </span>
+                                          );
+                                        }
+                                      )}
+                                    </span>
+                                  )}
+
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onSelectTask(parent.id);
+                                  }}
+                                  aria-label={`Mở chi tiết công việc ${parent.displayCode}: ${parent.title}`}
+                                  className="inline-flex items-center gap-1 min-h-[32px] sm:min-h-[26px] px-2.5 py-0.5 rounded-lg border border-[#DCD4C4] bg-white text-[11.5px] font-semibold text-huyen-lam hover:bg-huyen-lam hover:text-trang-nga hover:border-huyen-lam focus-visible:outline-2 focus-visible:outline-lam-sang transition-colors whitespace-nowrap shrink-0"
+                                >
+                                  <PanelRightOpen
+                                    className="w-3.5 h-3.5 shrink-0"
+                                    aria-hidden="true"
+                                  />
+                                  <span>Chi tiết</span>
+                                </button>
+                              </div>
+                            )}
+
+                            {!hasChildren && totalChildrenInParent > 0 && (
+                              <span className="inline-flex items-center gap-1.5 text-[11.5px] text-[#5E697A] whitespace-nowrap">
+                                <ListTree
+                                  className="w-3.5 h-3.5 shrink-0 text-thanh-ngoc"
+                                  aria-hidden="true"
+                                />
+                                <span className="font-mono-tabular font-semibold text-huyen-lam">
                                   {progress.completed}/{progress.total}
                                 </span>
-                                <span
-                                  aria-hidden="true"
-                                  className="w-11 h-1 rounded-full bg-[#EAE5D9] overflow-hidden inline-block"
-                                >
-                                  <span
-                                    className="block h-full rounded-full transition-all"
-                                    style={{
-                                      width: `${progress.percentage}%`,
-                                      backgroundColor: isParentDone
-                                        ? '#328578'
-                                        : catTheme.accent,
-                                    }}
-                                  />
+                                <span className="text-[#6A7485]">
+                                  hoàn thành
                                 </span>
                               </span>
                             )}
 
                             {parentLinksNode && (
                               <>
-                                {totalChildrenInParent > 0 && (
+                                {(hasChildren || totalChildrenInParent > 0) && (
                                   <span
                                     className="text-[#D4CCB9] select-none"
                                     aria-hidden="true"
@@ -1681,9 +1884,16 @@ export const TasksView: React.FC<TasksViewProps> = ({
                     </div>
                   </div>
 
-                  {/* Nested Child Rows (Warm Linen Well, Hairline Separators) */}
+                  {/* Nested Child Rows (Warm Linen Well, Subtle Tree Lineage Rail) */}
                   {isExpanded && (
-                    <div className="border-t border-[#ECE7DA] bg-[#FAF8F2]/85 divide-y divide-[#EFEAE0] rounded-b-2xl">
+                    <div
+                      id={childrenRegionId}
+                      className="relative border-t border-[#ECE7DA] bg-[#FAF8F3] divide-y divide-[#EFEAE0] rounded-b-2xl"
+                    >
+                      <div
+                        aria-hidden="true"
+                        className="hidden sm:block absolute left-[38px] top-0 bottom-4 w-px bg-[#DED7C7] pointer-events-none"
+                      />
                       {children.map((child) => {
                         const childLinksNode = renderTaskLinkActions(child);
                         const effChildCat = getEffectiveCategory(
@@ -1714,7 +1924,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                               <div className="flex items-start gap-2.5 min-w-0">
                                 <div className="shrink-0 w-9 sm:w-12 flex items-start justify-end pr-0.5 pt-1">
                                   <CornerDownRight
-                                    className="w-3.5 h-3.5 shrink-0 opacity-50"
+                                    className="w-3.5 h-3.5 shrink-0 opacity-65"
                                     style={{ color: catTheme.accent }}
                                     aria-hidden="true"
                                   />
@@ -1882,7 +2092,13 @@ export const TasksView: React.FC<TasksViewProps> = ({
             {filteredTree.length}
           </strong>{' '}
           nhóm việc cha
-          {visibleChildCount > 0 ? ` và ${visibleChildCount} việc con đang mở` : ''}
+          {visibleChildCount > 0
+            ? ` và ${visibleChildCount} việc con${
+                expandedChildCount < visibleChildCount
+                  ? ` (${expandedChildCount} đang mở)`
+                  : ''
+              }`
+            : ''}
         </span>
         <button
           type="button"

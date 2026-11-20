@@ -50,8 +50,10 @@ import {
   isTaskManagerRole,
   MAX_LINKS_PER_GROUP,
   partitionMyWorkTasks,
+  resolveParentExpandedState,
   resolveTaskAssignees,
   STATUS_META,
+  summarizeChildAttention,
   UNSET_STATUS_META,
   validateHttpUrl,
 } from './src/utils/taskHelpers';
@@ -3202,6 +3204,171 @@ test('Case 15: Member Directory official assignee visibility across Admin/Member
   assert.equal(freshTasksViewText.includes('overflowCount > 0'), true);
 
   assert.equal(freshDrawerText.includes('directoryUnavailable'), true);
+});
+
+test('Case 16: Smart Parent-Child Navigation V2.0 — child attention summary, filter expand/collapse override, and UI contracts', () => {
+  const refDate = new Date('2026-05-15T12:00:00Z');
+  const baseChild: TaskItem = {
+    ...sampleTasks[2],
+    parentId: 'tbhgn_4',
+    isTestRecord: false,
+    archivedAt: null,
+    status: 'Đang làm',
+    dueDate: '2026-06-01',
+    reviewFlags: [],
+  };
+
+  // 1. Clean children -> zero signals suppressed
+  const cleanSummary = summarizeChildAttention(
+    [
+      { ...baseChild, id: 'c_clean_1', status: 'Đang làm', dueDate: '2026-06-01' },
+      { ...baseChild, id: 'c_clean_2', status: 'Hoàn thành', dueDate: '2026-04-01' },
+    ],
+    refDate
+  );
+  assert.equal(cleanSummary.overdueCount, 0);
+  assert.equal(cleanSummary.pendingApprovalCount, 0);
+  assert.equal(cleanSummary.dataReviewCount, 0);
+  assert.equal(cleanSummary.signals.length, 0);
+  assert.equal(cleanSummary.visibleSignals.length, 0);
+  assert.equal(cleanSummary.tooltipText, '');
+
+  // 2. All 3 real signal types -> prioritized order, max 2 inline, 3rd preserved in tooltip
+  const mixedChildren: TaskItem[] = [
+    {
+      ...baseChild,
+      id: 'c_overdue',
+      status: 'Đang làm',
+      dueDate: '2026-05-01',
+      reviewFlags: [],
+    },
+    {
+      ...baseChild,
+      id: 'c_pending',
+      status: 'Chờ duyệt',
+      dueDate: '2026-06-01',
+      reviewFlags: [],
+    },
+    {
+      ...baseChild,
+      id: 'c_review',
+      status: 'Tạm dừng',
+      dueDate: null,
+      reviewFlags: ['missing_assignee'],
+    },
+    {
+      ...baseChild,
+      id: 'c_missing_status_only',
+      status: null,
+      dueDate: null,
+      reviewFlags: [],
+    },
+  ];
+  const mixedSummary = summarizeChildAttention(mixedChildren, refDate);
+  assert.equal(mixedSummary.overdueCount, 1);
+  assert.equal(mixedSummary.pendingApprovalCount, 1);
+  assert.equal(mixedSummary.dataReviewCount, 1);
+  assert.deepEqual(
+    mixedSummary.visibleSignals.map((s) => s.label),
+    ['1 quá hạn', '1 chờ duyệt']
+  );
+  assert.deepEqual(
+    mixedSummary.hiddenSignals.map((s) => s.label),
+    ['1 cần rà soát']
+  );
+  assert.equal(
+    mixedSummary.tooltipText,
+    '1 quá hạn · 1 chờ duyệt · 1 cần rà soát'
+  );
+
+  // 3. Smart filter expand/collapse state allows manual collapse while filter is active
+  assert.equal(
+    resolveParentExpandedState({
+      parentId: 'tbhgn_4',
+      hasVisibleChildren: true,
+      hasActiveFilter: true,
+      autoExpand: true,
+      expandedParents: { tbhgn_4: false },
+      filterOverrides: {},
+    }),
+    true
+  );
+  assert.equal(
+    resolveParentExpandedState({
+      parentId: 'tbhgn_4',
+      hasVisibleChildren: true,
+      hasActiveFilter: true,
+      autoExpand: true,
+      expandedParents: { tbhgn_4: true },
+      filterOverrides: { tbhgn_4: false },
+    }),
+    false
+  );
+  assert.equal(
+    resolveParentExpandedState({
+      parentId: 'tbhgn_4',
+      hasVisibleChildren: true,
+      hasActiveFilter: false,
+      autoExpand: false,
+      expandedParents: { tbhgn_4: true },
+      filterOverrides: { tbhgn_4: false },
+    }),
+    true
+  );
+  assert.equal(
+    resolveParentExpandedState({
+      parentId: 'tbhgn_1',
+      hasVisibleChildren: false,
+      hasActiveFilter: false,
+      autoExpand: false,
+      expandedParents: { tbhgn_1: true },
+      filterOverrides: {},
+    }),
+    false
+  );
+
+  // 4. UI source contracts on TasksView & TaskDetailDrawer
+  const freshTasksView = fs.readFileSync(
+    path.join(rootDir, 'src/components/TasksView.tsx'),
+    'utf8'
+  );
+  const freshDrawer = fs.readFileSync(
+    path.join(rootDir, 'src/components/TaskDetailDrawer.tsx'),
+    'utf8'
+  );
+
+  assert.equal(freshTasksView.includes('ListTree'), true);
+  assert.equal(freshTasksView.includes('việc con phù hợp'), true);
+  assert.equal(freshTasksView.includes('Xem việc con'), true);
+  assert.equal(freshTasksView.includes('hoàn thành'), true);
+  assert.equal(freshTasksView.includes('<span>Chi tiết</span>'), true);
+  assert.equal(freshTasksView.includes('aria-expanded={isExpanded}'), true);
+  assert.equal(freshTasksView.includes('aria-controls={childrenRegionId}'), true);
+  assert.equal(freshTasksView.includes('summarizeChildAttention'), true);
+  assert.equal(freshTasksView.includes('resolveParentExpandedState'), true);
+  assert.equal(freshTasksView.includes('filterExpansionOverrides'), true);
+  assert.equal(freshTasksView.includes('handleParentPrimaryAction'), true);
+
+  // TaskDetailDrawer View Mode places Việc con (N) BEFORE Tài liệu & Kết quả and Ghi chú
+  const viewModeStart = freshDrawer.indexOf('TAB: CHI TIẾT — VIEW MODE');
+  const editModeStart = freshDrawer.indexOf('TAB: CHI TIẾT — EDIT MODE');
+  assert.ok(viewModeStart > 0 && editModeStart > viewModeStart);
+  const viewModeChunk = freshDrawer.slice(viewModeStart, editModeStart);
+  const subtasksPos = viewModeChunk.indexOf('Việc con ({childTasks.length})');
+  const docsPos = viewModeChunk.indexOf('Tài liệu &amp; Kết quả');
+  const notesPos = viewModeChunk.indexOf('aria-label="Ghi chú"');
+  assert.ok(subtasksPos > 0, 'View mode must render Việc con ({childTasks.length})');
+  assert.ok(
+    subtasksPos < docsPos && docsPos < notesPos,
+    'Việc con must appear before Tài liệu & Kết quả and Ghi chú in View Mode'
+  );
+  assert.equal(viewModeChunk.includes('canCreateSubHere'), true);
+  assert.equal(viewModeChunk.includes("type: 'select_task'"), true);
+
+  // Edit mode also keeps draft-safe subtask jump via handleIntent
+  const editModeChunk = freshDrawer.slice(editModeStart);
+  assert.equal(editModeChunk.includes('aria-label="Chuyển nhanh việc con"'), true);
+  assert.equal(editModeChunk.includes("type: 'select_task'"), true);
 });
 
 

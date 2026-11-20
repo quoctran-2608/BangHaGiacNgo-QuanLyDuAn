@@ -1214,3 +1214,118 @@ export function getMyWorkCoAssigneesInfo(
   };
 }
 
+export type ChildAttentionSignalKind =
+  | 'overdue'
+  | 'pending_approval'
+  | 'data_review';
+
+export interface ChildAttentionSignal {
+  kind: ChildAttentionSignalKind;
+  count: number;
+  label: string;
+}
+
+export interface ChildAttentionSummary {
+  overdueCount: number;
+  pendingApprovalCount: number;
+  dataReviewCount: number;
+  signals: ChildAttentionSignal[];
+  visibleSignals: ChildAttentionSignal[];
+  hiddenSignals: ChildAttentionSignal[];
+  tooltipText: string;
+}
+
+/**
+ * Summarizes real child attention signals for a collapsed parent group.
+ * Strictly separates business status ("Chờ duyệt"), due date ("Quá hạn"),
+ * and data verification flags ("Cần rà soát"). Never mutates parent status.
+ */
+export function summarizeChildAttention(
+  children: TaskItem[],
+  referenceDate?: Date
+): ChildAttentionSummary {
+  let overdueCount = 0;
+  let pendingApprovalCount = 0;
+  let dataReviewCount = 0;
+
+  for (const child of children) {
+    if (isTaskOverdue(child, referenceDate)) {
+      overdueCount += 1;
+    }
+    if (child.status === 'Chờ duyệt') {
+      pendingApprovalCount += 1;
+    }
+    if (getTaskDataReviewSummary(child).dataFlags.length > 0) {
+      dataReviewCount += 1;
+    }
+  }
+
+  const signals: ChildAttentionSignal[] = [];
+  if (overdueCount > 0) {
+    signals.push({
+      kind: 'overdue',
+      count: overdueCount,
+      label: `${overdueCount} quá hạn`,
+    });
+  }
+  if (pendingApprovalCount > 0) {
+    signals.push({
+      kind: 'pending_approval',
+      count: pendingApprovalCount,
+      label: `${pendingApprovalCount} chờ duyệt`,
+    });
+  }
+  if (dataReviewCount > 0) {
+    signals.push({
+      kind: 'data_review',
+      count: dataReviewCount,
+      label: `${dataReviewCount} cần rà soát`,
+    });
+  }
+
+  return {
+    overdueCount,
+    pendingApprovalCount,
+    dataReviewCount,
+    signals,
+    visibleSignals: signals.slice(0, 2),
+    hiddenSignals: signals.slice(2),
+    tooltipText: signals.map((s) => s.label).join(' · '),
+  };
+}
+
+/**
+ * Computes whether a parent group is expanded, supporting smart auto-expansion
+ * during active filtering while allowing the user to manually collapse/expand
+ * individual or all matched groups without losing unfiltered preferences.
+ */
+export function resolveParentExpandedState(params: {
+  parentId: string;
+  hasVisibleChildren: boolean;
+  hasActiveFilter: boolean;
+  autoExpand: boolean;
+  expandedParents: Record<string, boolean>;
+  filterOverrides: Record<string, boolean>;
+}): boolean {
+  const {
+    parentId,
+    hasVisibleChildren,
+    hasActiveFilter,
+    autoExpand,
+    expandedParents,
+    filterOverrides,
+  } = params;
+
+  if (!hasVisibleChildren) return false;
+
+  if (hasActiveFilter) {
+    if (Object.prototype.hasOwnProperty.call(filterOverrides, parentId)) {
+      return Boolean(filterOverrides[parentId]);
+    }
+    return autoExpand ? true : Boolean(expandedParents[parentId]);
+  }
+
+  return Boolean(expandedParents[parentId]);
+}
+
+
