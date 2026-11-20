@@ -27,6 +27,7 @@ interface OverviewViewProps {
   categories?: CategoryItem[];
   members?: ProjectMember[];
   currentUser: ProjectMember;
+  directoryUnavailable?: boolean;
   onSelectTask: (taskId: string) => void;
   onNavigateToTasks: (filterPreset?: { status?: string; reviewOnly?: boolean }) => void;
 }
@@ -36,9 +37,26 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   categories = [],
   members = [],
   currentUser,
+  directoryUnavailable = false,
   onSelectTask,
   onNavigateToTasks,
 }) => {
+  const formatAssigneeSummary = (task: TaskItem): string => {
+    const resolved = resolveTaskAssignees(task, members);
+    if (directoryUnavailable && resolved.unknownUidCount > 0) {
+      if (resolved.assignedMembers.length > 0) {
+        const names = resolved.assignedMembers
+          .map((am) => (am.isActive ? am.displayName : `${am.displayName} (Đã khóa)`))
+          .join(', ');
+        return `${names} (+${resolved.unknownUidCount})`;
+      }
+      if (resolved.isCollectiveGroup) {
+        return 'Việc nhóm';
+      }
+      return '—';
+    }
+    return resolved.displayText;
+  };
   const isManager =
     currentUser.role === 'admin' || currentUser.role === 'moderator';
   const [reviewExpanded, setReviewExpanded] = useState<boolean>(isManager);
@@ -229,7 +247,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                     {task.title}
                   </div>
                   <div className="text-xs text-ink-muted mt-0.5">
-                    {resolveTaskAssignees(task, members).displayText}
+                    {formatAssigneeSummary(task)}
                   </div>
                 </div>
                 <StatusBadge status={task.status} compact />
@@ -250,7 +268,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                     </span>
                     <span aria-hidden="true">·</span>
                     <span>
-                      {resolveTaskAssignees(task, members).displayText}
+                      {formatAssigneeSummary(task)}
                     </span>
                   </div>
                   <div className="text-sm font-medium text-huyen-lam mt-0.5 break-words">
@@ -397,7 +415,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                       </span>
                       <span aria-hidden="true">·</span>
                       <span>
-                        {resolveTaskAssignees(parent, members).displayText}
+                        {formatAssigneeSummary(parent)}
                       </span>
                     </div>
                   </div>

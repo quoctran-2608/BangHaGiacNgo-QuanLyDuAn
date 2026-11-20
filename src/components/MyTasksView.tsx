@@ -38,6 +38,7 @@ import {
   getStatusMeta,
   MyWorkSortOption,
   partitionMyWorkTasks,
+  resolveTaskAssignees,
 } from '../utils/taskHelpers';
 import { CategoryChip } from './CategoryChip';
 import { ReviewBadge } from './ReviewBadge';
@@ -48,6 +49,7 @@ interface MyTasksViewProps {
   categories: CategoryItem[];
   members?: ProjectMember[];
   currentUser: ProjectMember;
+  directoryUnavailable?: boolean;
   onSelectTask: (taskId: string) => void;
   onNavigateToTasks?: () => void;
   onQuickUpdate: (
@@ -70,6 +72,7 @@ export const MyTasksView: React.FC<MyTasksViewProps> = ({
   categories,
   members = [],
   currentUser,
+  directoryUnavailable = false,
   onSelectTask,
   onNavigateToTasks,
   onQuickUpdate,
@@ -207,10 +210,12 @@ export const MyTasksView: React.FC<MyTasksViewProps> = ({
 
       if (q) {
         const effCat = getEffectiveCategory(task, activeTasks, categories);
+        const resolvedAssignees = resolveTaskAssignees(task, members);
         const hay = [
           task.displayCode,
           task.title,
           effCat.category,
+          resolvedAssignees.searchText,
           task.nextStep ?? '',
         ]
           .join(' ')
@@ -233,6 +238,7 @@ export const MyTasksView: React.FC<MyTasksViewProps> = ({
     attentionByTaskId,
     activeTasks,
     categories,
+    members,
     currentUser,
   ]);
 
@@ -603,7 +609,7 @@ export const MyTasksView: React.FC<MyTasksViewProps> = ({
                     </span>
                   )}
 
-                {coInfo.unknownUidCount > 0 && (
+                {coInfo.unknownUidCount > 0 && !directoryUnavailable && (
                   <span className="inline-flex items-center gap-1 text-[11.5px] text-[#7C4D00] font-medium">
                     <AlertTriangle className="w-3 h-3 shrink-0" />
                     <span>

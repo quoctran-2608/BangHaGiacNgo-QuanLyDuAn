@@ -1305,6 +1305,7 @@ export default function App() {
               categories={categories}
               members={members}
               currentUser={currentUser}
+              directoryUnavailable={directoryState.status === 'error'}
               onSelectTask={(id) => setSelectedTaskId(id)}
               onNavigateToTasks={(preset) => {
                 setTasksFilterPreset({
@@ -1340,6 +1341,7 @@ export default function App() {
               categories={categories}
               members={members}
               currentUser={currentUser}
+              directoryUnavailable={directoryState.status === 'error'}
               onSelectTask={(id) => setSelectedTaskId(id)}
               onNavigateToTasks={() => setRoute('tasks')}
               onQuickUpdate={handleQuickUpdate}
