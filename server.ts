@@ -1,8 +1,10 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
 import dotenv from 'dotenv';
+import { verifyFirebaseIdToken as verifyFirebaseIdTokenShared } from './server/mcp/auth.js';
+import { loadMcpConfig } from './server/mcp/config.js';
+import { mountMcpServer } from './server/mcp/router.js';
 
 dotenv.config();
 
@@ -22,119 +24,24 @@ const BOOTSTRAP_ADMIN_EMAIL = (
   .trim()
   .toLowerCase();
 
-const FIREBASE_CERTS_URL =
-  'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
-
-let cachedCerts: Record<string, string> = {};
-let certsExpiresAt = 0;
-
-async function getFirebasePublicCerts(): Promise<Record<string, string>> {
-  const now = Date.now();
-  if (now < certsExpiresAt && Object.keys(cachedCerts).length > 0) {
-    return cachedCerts;
-  }
-  const resp = await fetch(FIREBASE_CERTS_URL);
-  if (!resp.ok) {
-    throw new Error(`Failed to fetch Firebase public certs: ${resp.status}`);
-  }
-  const cacheControl = resp.headers.get('cache-control') || '';
-  const maxAgeMatch = cacheControl.match(/max-age=(\d+)/i);
-  const maxAgeSec = maxAgeMatch ? Number(maxAgeMatch[1]) : 3600;
-  cachedCerts = (await resp.json()) as Record<string, string>;
-  certsExpiresAt = now + maxAgeSec * 1000;
-  return cachedCerts;
-}
-
-interface VerifiedFirebaseToken {
-  uid: string;
-  email: string;
-  emailVerified: boolean;
-  name: string;
-}
-
-function decodeBase64Url(input: string): Buffer {
-  const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
-  const pad = normalized.length % 4;
-  const padded = pad ? normalized + '='.repeat(4 - pad) : normalized;
-  return Buffer.from(padded, 'base64');
-}
-
-async function verifyFirebaseIdToken(
-  idToken: string
-): Promise<VerifiedFirebaseToken> {
-  const parts = idToken.split('.');
-  if (parts.length !== 3) {
-    throw new Error('Token không đúng định dạng JWT.');
-  }
-  const [headerB64, payloadB64, sigB64] = parts;
-  const header = JSON.parse(decodeBase64Url(headerB64).toString('utf8')) as {
-    alg?: string;
-    kid?: string;
-  };
-  if (header.alg !== 'RS256' || !header.kid) {
-    throw new Error('Thuật toán hoặc key ID của token không hợp lệ.');
-  }
-
-  const certs = await getFirebasePublicCerts();
-  const certPem = certs[header.kid];
-  if (!certPem) {
-    throw new Error('Không tìm thấy chứng chỉ công khai khớp với token.');
-  }
-
-  const verifier = crypto.createVerify('RSA-SHA256');
-  verifier.update(`${headerB64}.${payloadB64}`);
-  verifier.end();
-  const signature = decodeBase64Url(sigB64);
-  if (!verifier.verify(certPem, signature)) {
-    throw new Error('Chữ ký Firebase ID Token không hợp lệ.');
-  }
-
-  const payload = JSON.parse(decodeBase64Url(payloadB64).toString('utf8')) as {
-    aud?: string;
-    iss?: string;
-    sub?: string;
-    exp?: number;
-    iat?: number;
-    email?: string;
-    email_verified?: boolean;
-    name?: string;
-  };
-
-  const nowSec = Math.floor(Date.now() / 1000);
-  const expectedIssuer = `https://securetoken.google.com/${firebaseConfig.projectId}`;
-
-  if (payload.aud !== firebaseConfig.projectId) {
-    throw new Error('Token audience không khớp với dự án TBHGN.');
-  }
-  if (payload.iss !== expectedIssuer) {
-    throw new Error('Token issuer không hợp lệ.');
-  }
-  if (!payload.sub || typeof payload.sub !== 'string') {
-    throw new Error('Token thiếu UID.');
-  }
-  if (!payload.exp || payload.exp <= nowSec) {
-    throw new Error('Phiên đăng nhập đã hết hạn.');
-  }
-  if (!payload.iat || payload.iat > nowSec + 300) {
-    throw new Error('Thời gian phát hành token không hợp lệ.');
-  }
-  if (!payload.email || payload.email_verified !== true) {
-    throw new Error('Tài khoản Google chưa xác minh email.');
-  }
-
-  return {
-    uid: payload.sub,
-    email: payload.email.toLowerCase(),
-    emailVerified: true,
-    name: payload.name || payload.email.split('@')[0],
-  };
+async function verifyFirebaseIdToken(idToken: string) {
+  return verifyFirebaseIdTokenShared(idToken, firebaseConfig.projectId);
 }
 
 async function createServer() {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
-  app.use(express.json());
+
+  // Mount Read-Only MCP V1.0 Server (`/mcp`, `/.well-known/oauth-*`, `/api/mcp/health`)
+  // Mounted before global JSON parser so `/mcp` applies Host/Origin/rate-limit checks first.
+  const mcpConfig = loadMcpConfig({
+    firebaseProjectId: firebaseConfig.projectId,
+    firestoreDatabaseId: firebaseConfig.firestoreDatabaseId,
+  });
+  mountMcpServer(app, { config: mcpConfig });
+
+  app.use(express.json({ limit: '100kb' }));
 
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -291,9 +198,11 @@ async function createServer() {
 
   app.use(
     [
+      '/server',
       '/server_data',
       '/dist-server',
       '/deploy',
+      '/docs',
       '/firestore.rules',
       '/firestore.rules.backup',
       '/firestore.rules.test.ts',

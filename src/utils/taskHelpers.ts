@@ -1,11 +1,11 @@
-import {
+import type {
   CategoryItem,
   DocumentLink,
   ProjectMember,
   ReviewFlag,
   TaskItem,
   TaskStatus,
-} from '../types/project';
+} from '../types/project.js';
 
 export interface StatusStyleMeta {
   label: string;

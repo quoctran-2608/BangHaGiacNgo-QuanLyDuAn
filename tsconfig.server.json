@@ -11,5 +11,13 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["server.ts"]
+  "include": [
+    "server.ts",
+    "server/**/*.ts",
+    "src/utils/taskHelpers.ts",
+    "src/types/project.ts"
+  ],
+  "exclude": [
+    "server/**/*.test.ts"
+  ]
 }
