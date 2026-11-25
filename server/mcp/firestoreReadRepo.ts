@@ -226,20 +226,37 @@ function mapRestMemberDirectoryDoc(
 export interface FirestoreRestRepoOptions {
   projectId: string;
   databaseId: string;
-  /** Verified Bearer token forwarded to Firestore REST API v1 (enforces firestore.rules) */
+  /** Verified Bearer token forwarded to Firestore REST API v1 */
   bearerToken: string;
   timeoutMs?: number;
+  /** Strictly for non-production automated tests targeting a local mock Firestore server */
+  apiBaseUrlOverride?: string;
+}
+
+function resolveFirestoreApiBase(override?: string): string {
+  const official = 'https://firestore.googleapis.com/v1';
+  if (!override || process.env.NODE_ENV === 'production') {
+    return official;
+  }
+  const parsed = new URL(override);
+  if (
+    parsed.protocol === 'http:' &&
+    (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost')
+  ) {
+    return override.replace(/\/+$/, '');
+  }
+  throw new Error('apiBaseUrlOverride is only permitted for local loopback tests.');
 }
 
 /**
  * Strictly READ-ONLY Firestore REST API v1 repository.
- * Uses HTTP GET exclusively and forwards the caller's verified token so both
- * server-side RBAC and Firestore Security Rules enforce access.
+ * Uses HTTP GET exclusively and targets the exact TBHGN named database.
  */
 export function createFirestoreReadRepository(
   options: FirestoreRestRepoOptions
 ): McpReadRepository {
-  const baseUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+  const apiBase = resolveFirestoreApiBase(options.apiBaseUrlOverride);
+  const baseUrl = `${apiBase}/projects/${encodeURIComponent(
     options.projectId
   )}/databases/${encodeURIComponent(options.databaseId)}/documents`;
   const timeoutMs = options.timeoutMs ?? FIRESTORE_FETCH_TIMEOUT_MS;

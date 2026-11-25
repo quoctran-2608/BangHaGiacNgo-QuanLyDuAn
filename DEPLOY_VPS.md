@@ -1,10 +1,10 @@
-# Hướng dẫn triển khai TBHGN lên VPS Linux (`giacngo.nhamycali.com`)
+# Hướng dẫn triển khai TBHGN lên VPS Linux (`duan.banghadengiacngo.io.vn`)
 
-Ứng dụng giữ nguyên kiến trúc **React + Vite (build tĩnh `dist/`) + Express (`dist-server/server.js`) + Firebase Authentication + named Firestore database** hiện tại, không thay đổi hoặc nhập lại dữ liệu 20 công việc.
+Ứng dụng giữ nguyên kiến trúc **React + Vite (build tĩnh `dist/`) + Express (`dist-server/server.js`) + Firebase Authentication + named Firestore database + TBHGN MCP Server V1.1 (chỉ đọc)** hiện tại, không thay đổi hoặc nhập lại dữ liệu 20 công việc.
 
 - **Firebase Project ID:** `gen-lang-client-0491463422`
 - **Firestore Database ID:** `ai-studio-tbhgnqunldnsch-a72a3d00-34e2-44ed-b19a-4166785fc8ab`
-- **Domain triển khai:** `giacngo.nhamycali.com`
+- **Domain triển khai chính thức:** `duan.banghadengiacngo.io.vn`
 
 ---
 
@@ -28,14 +28,14 @@ npm -v
 
 ## 2. Trỏ DNS domain
 
-Tại trang quản lý DNS của `nhamycali.com`, tạo bản ghi:
+Tại trang quản lý DNS của `banghadengiacngo.io.vn`, tạo bản ghi:
 - **Type:** `A`
-- **Host/Name:** `giacngo`
+- **Host/Name:** `duan`
 - **Value:** `<IP_PUBLIC_CUA_VPS>`
 
 Kiểm tra trước khi cấp SSL:
 ```bash
-dig +short giacngo.nhamycali.com
+dig +short duan.banghadengiacngo.io.vn
 ```
 
 ---
@@ -62,16 +62,19 @@ cp .env.example .env
 nano .env
 ```
 
-Nội dung tối thiểu trong `.env`:
+Nội dung tối thiểu trong `.env` cho web + MCP:
 ```env
 NODE_ENV="production"
 HOST="127.0.0.1"
 PORT="3000"
-APP_URL="https://giacngo.nhamycali.com"
+APP_URL="https://duan.banghadengiacngo.io.vn"
 BOOTSTRAP_ADMIN_EMAIL="ngaothuyet2023@gmail.com"
+MCP_PUBLIC_URL="https://duan.banghadengiacngo.io.vn/mcp"
+MCP_ALLOWED_HOSTS="duan.banghadengiacngo.io.vn"
+MCP_ALLOWED_ORIGINS="duan.banghadengiacngo.io.vn"
 ```
 
-> Lưu ý: không cần chép thư mục `server_data/` lên VPS nếu dữ liệu 20 công việc đã có sẵn trên Firestore. Kể cả khi có `server_data/`, Express và Nginx đều chặn truy cập HTTP công khai (`403`).
+> Lưu ý: chi tiết cấu hình OAuth 2.1 và Firestore Read Bridge cho ChatGPT xem tại `docs/MCP_V1_SETUP.md`. Không cần chép thư mục `server_data/` lên VPS nếu dữ liệu 20 công việc đã có sẵn trên Firestore.
 
 Kiểm tra chạy thử trực tiếp trên VPS:
 ```bash
@@ -80,6 +83,7 @@ npm run start
 Mở một terminal khác kiểm tra nhanh:
 ```bash
 curl -i http://127.0.0.1:3000/api/health
+curl -i http://127.0.0.1:3000/api/mcp/health
 ```
 Phải trả về `200 OK` với `projectId` và `databaseId` chính xác, rồi nhấn `Ctrl+C` để chuyển sang chạy bằng `systemd`.
 
@@ -107,18 +111,23 @@ sudo journalctl -u tbhgn -f
 
 ## 5. Cấu hình Nginx Reverse Proxy + HTTPS
 
-Chép cấu hình mẫu `deploy/nginx-tbhgn.conf` và bật site:
+> **Lưu ý an toàn:** Nếu VPS đã có sẵn cấu hình Nginx cho `duan.banghadengiacngo.io.vn` (đặc biệt khi đã có SSL Certbot), **không ghi đè trực tiếp** — hãy sao lưu file đang chạy và đối chiếu (`diff`) với `deploy/nginx-tbhgn.conf` trước khi hợp nhất!
 
 ```bash
+# Sao lưu nếu đã có cấu hình cũ
+sudo ls -la /etc/nginx/sites-enabled/
+sudo cp /etc/nginx/sites-available/tbhgn /etc/nginx/sites-available/tbhgn.bak.$(date +%Y%m%d%H%M) 2>/dev/null || true
+
+# Chỉ chép mẫu khi cài mới lần đầu
 sudo cp /var/www/tbhgn/deploy/nginx-tbhgn.conf /etc/nginx/sites-available/tbhgn
 sudo ln -sf /etc/nginx/sites-available/tbhgn /etc/nginx/sites-enabled/tbhgn
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-Cấp chứng chỉ SSL HTTPS miễn phí từ Let's Encrypt:
+Cấp chứng chỉ SSL HTTPS miễn phí từ Let's Encrypt (nếu chưa có):
 ```bash
-sudo certbot --nginx -d giacngo.nhamycali.com
+sudo certbot --nginx -d duan.banghadengiacngo.io.vn
 ```
 Chọn tùy chọn chuyển hướng toàn bộ HTTP sang HTTPS khi Certbot hỏi. Kiểm tra gia hạn tự động:
 ```bash
@@ -136,13 +145,13 @@ sudo ufw status
 
 ## 6. Thêm domain vào Firebase Authorized Domains
 
-Bước bắt buộc để Google Sign-In hoạt động trên `https://giacngo.nhamycali.com`:
+Bước bắt buộc để Google Sign-In hoạt động trên `https://duan.banghadengiacngo.io.vn`:
 
 1. Mở [Firebase Console](https://console.firebase.google.com/) -> chọn project **`gen-lang-client-0491463422`**.
 2. Vào **Build -> Authentication -> Settings -> Authorized domains**.
 3. Nhấn **Add domain**, nhập:
    ```
-   giacngo.nhamycali.com
+   duan.banghadengiacngo.io.vn
    ```
 4. Lưu lại (có hiệu lực sau vài giây đến ~1 phút).
 
@@ -150,23 +159,25 @@ Bước bắt buộc để Google Sign-In hoạt động trên `https://giacngo.
 
 ## 7. Checklist kiểm tra sau triển khai
 
-1. **API & Healthcheck:**
+1. **API & MCP Healthcheck:**
    ```bash
-   curl -s https://giacngo.nhamycali.com/api/health
+   curl -s https://duan.banghadengiacngo.io.vn/api/health
+   curl -s https://duan.banghadengiacngo.io.vn/api/mcp/health
+   curl -s https://duan.banghadengiacngo.io.vn/.well-known/oauth-protected-resource/mcp
    ```
-   Kỳ vọng: `{"ok":true,"projectId":"gen-lang-client-0491463422","databaseId":"ai-studio-tbhgnqunldnsch-a72a3d00-34e2-44ed-b19a-4166785fc8ab"}`.
 2. **Bảo vệ dữ liệu nội bộ (`403`):**
    ```bash
-   curl -I https://giacngo.nhamycali.com/server_data/test.json
-   curl -I https://giacngo.nhamycali.com/firestore.rules
-   curl -I https://giacngo.nhamycali.com/.env
+   curl -I https://duan.banghadengiacngo.io.vn/server_data/test.json
+   curl -I https://duan.banghadengiacngo.io.vn/server/mcp/auth.ts
+   curl -I https://duan.banghadengiacngo.io.vn/firestore.rules
+   curl -I https://duan.banghadengiacngo.io.vn/.env
    ```
    Tất cả phải trả `403 Forbidden`.
 3. **SPA Refresh không lỗi 404:**
-   Mở trình duyệt vào `https://giacngo.nhamycali.com/tasks` hoặc nhấn F5 tại bất kỳ màn hình nào -> trang tải lại bình thường (`200 OK`).
+   Mở trình duyệt vào `https://duan.banghadengiacngo.io.vn/tasks` hoặc nhấn F5 tại bất kỳ màn hình nào -> trang tải lại bình thường (`200 OK`).
 4. **Google Login trên Desktop & Mobile:**
-   - **Desktop (Chrome/Safari/Edge):** Nhấn đăng nhập Google -> popup chọn tài khoản hiện ra, đăng nhập thành công, tải đúng 20 công việc thật và quyền tài khoản tương ứng.
-   - **Mobile (iOS Safari / Android Chrome):** Kiểm tra cả nút đăng nhập Google mặc định và nút dự phòng chuyển hướng nếu trình duyệt chặn popup; xác nhận giữ nguyên phiên đăng nhập sau khi tải lại trang.
+   - **Desktop (Chrome/Safari/Edge):** Nhấn đăng nhập Google -> popup chọn tài khoản hiện ra, đăng nhập thành công, tải đúng công việc thật và quyền tài khoản tương ứng.
+   - **Mobile (iOS Safari / Android Chrome):** Kiểm tra cả nút đăng nhập Google mặc định và nút dự phòng chuyển hướng nếu trình duyệt chặn popup.
 
 ---
 

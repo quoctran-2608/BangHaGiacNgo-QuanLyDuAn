@@ -11,6 +11,10 @@ import {
   type AuthInfo,
   type OAuthTokenVerifier,
 } from '@modelcontextprotocol/server';
+import {
+  isValidFirebaseUid,
+  type OAuthIdentityLinker,
+} from './identityLink.js';
 import type {
   McpAuthenticatedActor,
   McpAuthMethod,
@@ -29,6 +33,9 @@ const ALLOWED_OAUTH_ALGS = [
   'ES384',
   'EdDSA',
 ];
+
+const DISCOVERY_TIMEOUT_MS = 8_000;
+const DISCOVERY_CACHE_TTL_MS = 10 * 60 * 1000;
 
 let cachedFirebaseCerts: Record<string, string> = {};
 let firebaseCertsExpiresAt = 0;
@@ -159,6 +166,132 @@ export async function verifyFirebaseIdToken(
   };
 }
 
+function normalizeIssuer(issuer: string): string {
+  return issuer.trim().replace(/\/+$/, '');
+}
+
+function isSafeDiscoveryUrl(urlStr: string, allowLocalhostHttp: boolean): boolean {
+  try {
+    const u = new URL(urlStr);
+    if (u.protocol === 'https:') return true;
+    if (
+      allowLocalhostHttp &&
+      u.protocol === 'http:' &&
+      (u.hostname === '127.0.0.1' || u.hostname === 'localhost')
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export interface DiscoveredAsMetadata {
+  issuer: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+  jwks_uri: string;
+  [key: string]: unknown;
+}
+
+const discoveryCache = new Map<
+  string,
+  { metadata: DiscoveredAsMetadata; expiresAtMs: number }
+>();
+
+/**
+ * Fetches genuine RFC 8414 / OIDC Discovery metadata directly from the configured
+ * Authorization Server, validating exact `issuer` match and HTTPS URLs.
+ * Never fabricates endpoints or unsupported capabilities.
+ */
+export async function discoverAuthorizationServerMetadata(
+  issuer: string,
+  options: { allowLocalhostHttp?: boolean } = {}
+): Promise<DiscoveredAsMetadata> {
+  const normalizedIssuer = normalizeIssuer(issuer);
+  const allowLocalhostHttp =
+    Boolean(options.allowLocalhostHttp) &&
+    process.env.NODE_ENV !== 'production';
+
+  const cached = discoveryCache.get(normalizedIssuer);
+  if (cached && Date.now() < cached.expiresAtMs) {
+    return cached.metadata;
+  }
+
+  const issuerUrl = new URL(normalizedIssuer);
+  const pathSuffix =
+    issuerUrl.pathname && issuerUrl.pathname !== '/'
+      ? issuerUrl.pathname.replace(/\/+$/, '')
+      : '';
+
+  // Standard RFC 8414 path-insertion + OIDC discovery order
+  const candidateUrls = pathSuffix
+    ? [
+        `${issuerUrl.origin}/.well-known/oauth-authorization-server${pathSuffix}`,
+        `${issuerUrl.origin}/.well-known/openid-configuration${pathSuffix}`,
+        `${normalizedIssuer}/.well-known/openid-configuration`,
+      ]
+    : [
+        `${issuerUrl.origin}/.well-known/oauth-authorization-server`,
+        `${issuerUrl.origin}/.well-known/openid-configuration`,
+      ];
+
+  for (const url of candidateUrls) {
+    if (!isSafeDiscoveryUrl(url, allowLocalhostHttp)) continue;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DISCOVERY_TIMEOUT_MS);
+    try {
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+      });
+      if (!resp.ok) continue;
+      const doc = (await resp.json()) as Record<string, unknown>;
+      const docIssuer =
+        typeof doc.issuer === 'string' ? normalizeIssuer(doc.issuer) : '';
+      const authEp =
+        typeof doc.authorization_endpoint === 'string'
+          ? doc.authorization_endpoint
+          : '';
+      const tokenEp =
+        typeof doc.token_endpoint === 'string' ? doc.token_endpoint : '';
+      const jwksUri = typeof doc.jwks_uri === 'string' ? doc.jwks_uri : '';
+
+      if (
+        docIssuer !== normalizedIssuer ||
+        !isSafeDiscoveryUrl(authEp, allowLocalhostHttp) ||
+        !isSafeDiscoveryUrl(tokenEp, allowLocalhostHttp) ||
+        !isSafeDiscoveryUrl(jwksUri, allowLocalhostHttp)
+      ) {
+        continue;
+      }
+
+      const verified: DiscoveredAsMetadata = {
+        ...doc,
+        issuer: doc.issuer as string,
+        authorization_endpoint: authEp,
+        token_endpoint: tokenEp,
+        jwks_uri: jwksUri,
+      };
+      discoveryCache.set(normalizedIssuer, {
+        metadata: verified,
+        expiresAtMs: Date.now() + DISCOVERY_CACHE_TTL_MS,
+      });
+      return verified;
+    } catch {
+      // try next standard discovery URL
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw new Error(
+    `Failed to discover verified OAuth Authorization Server metadata for issuer ${normalizedIssuer}`
+  );
+}
+
 function extractScopesFromJwtPayload(payload: Record<string, unknown>): string[] {
   const scopes = new Set<string>();
   if (typeof payload.scope === 'string') {
@@ -182,16 +315,18 @@ export interface CreateMcpTokenVerifierOptions {
     projectId: string
   ) => Promise<VerifiedFirebaseToken>;
   oauthJwks?: JWTVerifyGetKey;
+  allowLocalhostDiscovery?: boolean;
 }
 
 /**
- * Cryptographic Bearer Token verifier for TBHGN MCP V1.0.
+ * Cryptographic Bearer Token verifier for TBHGN MCP V1.1.
  *
  * Supports:
  * 1. OAuth 2.1 JWT access tokens verified via JWKS (strict asymmetric algorithms,
- *    issuer, audience/resource binding, exp/nbf/iat, required scope, and verified UID claim).
+ *    exact issuer, exact RFC 8707 audience/resource binding, exp/nbf/iat, scopes, sub).
+ *    NEVER accepts an OAuth JWT as a Firebase ID Token.
  * 2. Firebase ID Tokens (RS256 verified against Google's official public x509 certs)
- *    when `config.allowFirebaseIdToken` is true.
+ *    when `config.allowFirebaseIdToken` is true (primarily for MCP Inspector).
  *
  * Fail-closed: rejects any missing, unsigned, expired, wrong-issuer, or wrong-audience token.
  */
@@ -202,9 +337,27 @@ export function createMcpTokenVerifier(
   const firebaseVerifier =
     options.verifyFirebaseIdTokenFn ?? verifyFirebaseIdToken;
   const firebaseIssuer = `https://securetoken.google.com/${config.firebaseProjectId}`;
-  const jwks: JWTVerifyGetKey | null = config.oauth
-    ? options.oauthJwks ?? createRemoteJWKSet(new URL(config.oauth.jwksUri))
-    : null;
+
+  let resolvedJwks: JWTVerifyGetKey | null = options.oauthJwks ?? null;
+  if (!resolvedJwks && config.oauth?.jwksUri) {
+    resolvedJwks = createRemoteJWKSet(new URL(config.oauth.jwksUri));
+  }
+
+  async function getOAuthJwks(): Promise<JWTVerifyGetKey> {
+    if (resolvedJwks) return resolvedJwks;
+    if (!config.oauth) {
+      throw new OAuthError(
+        OAuthErrorCode.InvalidToken,
+        'OAuth chưa được cấu hình trên máy chủ.'
+      );
+    }
+    const meta = await discoverAuthorizationServerMetadata(
+      config.oauth.issuer,
+      { allowLocalhostHttp: options.allowLocalhostDiscovery }
+    );
+    resolvedJwks = createRemoteJWKSet(new URL(meta.jwks_uri));
+    return resolvedJwks;
+  }
 
   return {
     async verifyAccessToken(token: string): Promise<AuthInfo> {
@@ -222,7 +375,9 @@ export function createMcpTokenVerifier(
       try {
         const unverified = decodeJwt(trimmed);
         unverifiedIss =
-          typeof unverified.iss === 'string' ? unverified.iss : undefined;
+          typeof unverified.iss === 'string'
+            ? normalizeIssuer(unverified.iss)
+            : undefined;
       } catch {
         throw new OAuthError(
           OAuthErrorCode.InvalidToken,
@@ -231,10 +386,7 @@ export function createMcpTokenVerifier(
       }
 
       // Path A: Firebase ID Token
-      if (
-        config.allowFirebaseIdToken &&
-        unverifiedIss === firebaseIssuer
-      ) {
+      if (config.allowFirebaseIdToken && unverifiedIss === firebaseIssuer) {
         try {
           const verified = await firebaseVerifier(
             trimmed,
@@ -260,10 +412,15 @@ export function createMcpTokenVerifier(
       }
 
       // Path B: OAuth 2.1 JWT via JWKS
-      if (config.oauth && jwks) {
+      if (config.oauth) {
+        const expectedIssuer = normalizeIssuer(config.oauth.issuer);
+        // Accept both exact issuer and trailing-slash variant per IdP convention (e.g. Auth0)
+        const allowedIssuers = [expectedIssuer, `${expectedIssuer}/`];
+
         try {
+          const jwks = await getOAuthJwks();
           const { payload } = await jwtVerify(trimmed, jwks, {
-            issuer: config.oauth.issuer,
+            issuer: allowedIssuers,
             audience: config.oauth.audience,
             algorithms: ALLOWED_OAUTH_ALGS,
           });
@@ -276,11 +433,12 @@ export function createMcpTokenVerifier(
             );
           }
 
-          const rawUid = payload[config.oauth.uidClaim];
-          if (typeof rawUid !== 'string' || !rawUid.trim()) {
+          const sub =
+            typeof payload.sub === 'string' ? payload.sub.trim() : '';
+          if (!sub) {
             throw new OAuthError(
               OAuthErrorCode.InvalidToken,
-              'Access token không chứa định danh thành viên TBHGN hợp lệ.'
+              'Access token thiếu định danh người dùng (sub).'
             );
           }
 
@@ -294,6 +452,13 @@ export function createMcpTokenVerifier(
                 ? payload.client_id
                 : 'oauth-client';
 
+          // Retain ONLY non-PII verified linking claims (explicitly omit email)
+          const verifiedLinkingClaims: Record<string, unknown> = {};
+          const uidClaimName = config.oauth.uidClaim;
+          if (uidClaimName && uidClaimName in payload) {
+            verifiedLinkingClaims[uidClaimName] = payload[uidClaimName];
+          }
+
           return {
             token: trimmed,
             clientId,
@@ -302,7 +467,9 @@ export function createMcpTokenVerifier(
             resource: new URL(config.publicUrl.toString()),
             extra: {
               authMethod: 'oauth_jwt' satisfies McpAuthMethod,
-              uid: rawUid.trim(),
+              oauthIssuer: normalizeIssuer(String(payload.iss ?? expectedIssuer)),
+              oauthSubject: sub,
+              oauthClaims: verifiedLinkingClaims,
             },
           };
         } catch (err) {
@@ -336,24 +503,68 @@ export class McpActorForbiddenError extends Error {
 }
 
 /**
- * Resolves the verified token's UID against `/users/{uid}` in Firestore.
+ * Resolves the verified TBHGN Firebase UID from `authInfo` BEFORE touching Firestore.
+ * - For Firebase ID Token: uses cryptographically verified `uid`.
+ * - For OAuth 2.1 JWT: resolves strictly via `identityLinker` (`mapping_file`, `idp_claim`, or `both_strict`).
+ *   NEVER uses email matching and NEVER accepts arbitrary client-supplied UIDs.
+ */
+export function resolveVerifiedFirebaseUid(
+  authInfo: AuthInfo,
+  identityLinker?: OAuthIdentityLinker
+): { uid: string; authMethod: McpAuthMethod } {
+  const extra = authInfo.extra ?? {};
+  const authMethod: McpAuthMethod =
+    extra.authMethod === 'oauth_jwt' ? 'oauth_jwt' : 'firebase_id_token';
+
+  if (authMethod === 'firebase_id_token') {
+    const uid = typeof extra.uid === 'string' ? extra.uid.trim() : '';
+    if (!isValidFirebaseUid(uid)) {
+      throw new McpActorForbiddenError(
+        'Không xác định được UID hợp lệ từ phiên Firebase.',
+        'missing_uid'
+      );
+    }
+    return { uid, authMethod };
+  }
+
+  if (!identityLinker) {
+    throw new McpActorForbiddenError(
+      'Cơ chế liên kết danh tính OAuth chưa được kích hoạt trên máy chủ.',
+      'oauth_identity_not_linked'
+    );
+  }
+
+  const oauthIssuer =
+    typeof extra.oauthIssuer === 'string' ? extra.oauthIssuer : '';
+  const oauthSubject =
+    typeof extra.oauthSubject === 'string' ? extra.oauthSubject : '';
+  const oauthClaims =
+    extra.oauthClaims && typeof extra.oauthClaims === 'object'
+      ? (extra.oauthClaims as Record<string, unknown>)
+      : {};
+
+  const uid = identityLinker.resolveFirebaseUid({
+    issuer: oauthIssuer,
+    subject: oauthSubject,
+    claims: oauthClaims,
+  });
+
+  return { uid, authMethod };
+}
+
+/**
+ * Resolves the verified Firebase UID against live `/users/{uid}` in Firestore.
  * Rejects missing profiles and locked (`isActive !== true`) accounts.
  */
 export async function resolveActiveMcpActor(
   authInfo: AuthInfo,
-  repo: McpReadRepository
+  repo: McpReadRepository,
+  identityLinker?: OAuthIdentityLinker
 ): Promise<McpAuthenticatedActor> {
-  const extra = authInfo.extra ?? {};
-  const uid = typeof extra.uid === 'string' ? extra.uid.trim() : '';
-  const authMethod: McpAuthMethod =
-    extra.authMethod === 'oauth_jwt' ? 'oauth_jwt' : 'firebase_id_token';
-
-  if (!uid) {
-    throw new McpActorForbiddenError(
-      'Không xác định được UID hợp lệ từ phiên xác thực.',
-      'missing_uid'
-    );
-  }
+  const { uid, authMethod } = resolveVerifiedFirebaseUid(
+    authInfo,
+    identityLinker
+  );
 
   const profile = await repo.getUserProfile(uid);
   if (!profile) {

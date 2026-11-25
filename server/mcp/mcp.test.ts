@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import type { AddressInfo } from 'node:net';
+import path from 'node:path';
 import test, { after, before } from 'node:test';
 import express from 'express';
 import {
   createLocalJWKSet,
   exportJWK,
+  exportPKCS8,
   generateKeyPair,
+  jwtVerify,
   SignJWT,
   type CryptoKey,
 } from 'jose';
@@ -14,12 +18,23 @@ import {
   StreamableHTTPClientTransport,
 } from '@modelcontextprotocol/client';
 import type { CategoryItem, TaskItem } from '../../src/types/project.js';
-import { createMcpTokenVerifier } from './auth.js';
-import { loadMcpConfig } from './config.js';
+import {
+  createMcpTokenVerifier,
+  discoverAuthorizationServerMetadata,
+} from './auth.js';
+import {
+  loadMcpConfig,
+  TBHGN_OFFICIAL_PROD_MCP_URL,
+} from './config.js';
+import {
+  createFirestoreReadBridge,
+  FIRESTORE_REST_OAUTH_SCOPE,
+} from './firestoreBridge.js';
 import {
   createFirestoreReadRepository,
   createInMemoryMcpRepository,
 } from './firestoreReadRepo.js';
+import { createOAuthIdentityLinker } from './identityLink.js';
 import { mountMcpServer } from './router.js';
 import { MCP_READ_ONLY_TOOL_NAMES } from './tools.js';
 import type { McpAuditEntry, McpUserRecord } from './types.js';
@@ -27,6 +42,9 @@ import type { McpAuditEntry, McpUserRecord } from './types.js';
 const REFERENCE_DATE = new Date('2026-06-15T12:00:00Z');
 const OAUTH_ISSUER = 'https://auth.tbhgn-test.example';
 const SECRET_EMAIL_SENTINEL = 'secret-personal-email@example.com';
+const EXPECTED_PROJECT_ID = 'gen-lang-client-0491463422';
+const EXPECTED_DB_ID =
+  'ai-studio-tbhgnqunldnsch-a72a3d00-34e2-44ed-b19a-4166785fc8ab';
 
 const FIXTURE_USERS: McpUserRecord[] = [
   {
@@ -65,6 +83,54 @@ const FIXTURE_USERS: McpUserRecord[] = [
     isActive: false,
   },
 ];
+
+const FIXTURE_IDENTITY_LINKS = JSON.stringify({
+  version: 1,
+  links: [
+    {
+      issuer: OAUTH_ISSUER,
+      sub: 'idp_sub_admin',
+      firebaseUid: 'uid_admin',
+      verifiedByAdmin: true,
+    },
+    {
+      issuer: OAUTH_ISSUER,
+      sub: 'idp_sub_mod',
+      firebaseUid: 'uid_mod',
+      verifiedByAdmin: true,
+    },
+    {
+      issuer: OAUTH_ISSUER,
+      sub: 'idp_sub_member',
+      firebaseUid: 'uid_member',
+      verifiedByAdmin: true,
+    },
+    {
+      issuer: OAUTH_ISSUER,
+      sub: 'idp_sub_viewer',
+      firebaseUid: 'uid_viewer',
+      verifiedByAdmin: true,
+    },
+    {
+      issuer: OAUTH_ISSUER,
+      sub: 'idp_sub_locked',
+      firebaseUid: 'uid_locked',
+      verifiedByAdmin: true,
+    },
+    {
+      issuer: OAUTH_ISSUER,
+      sub: 'idp_sub_missing_profile',
+      firebaseUid: 'uid_does_not_exist',
+      verifiedByAdmin: true,
+    },
+    {
+      issuer: OAUTH_ISSUER,
+      sub: 'idp_sub_unverified',
+      firebaseUid: 'uid_admin',
+      verifiedByAdmin: false, // MUST be ignored!
+    },
+  ],
+});
 
 const FIXTURE_CATEGORIES: CategoryItem[] = [
   {
@@ -141,7 +207,7 @@ const FIXTURE_TASKS: TaskItem[] = [
     assigneeUids: ['uid_member'],
     status: 'Chờ duyệt',
     nextStep: 'Trình Sư Phụ duyệt',
-    dueDate: '2026-06-01', // Overdue relative to 2026-06-15 AND Chờ duyệt -> tests deduplication!
+    dueDate: '2026-06-01',
     updatedAt: '2026-06-11T08:00:00Z',
     updatedBy: 'Khánh',
     version: 2,
@@ -246,7 +312,7 @@ const FIXTURE_TASKS: TaskItem[] = [
     category: 'Đề cương',
     assignees: [],
     assigneeUids: [],
-    status: null, // MUST stay separate from 'Chưa bắt đầu'!
+    status: null,
     nextStep: null,
     dueDate: null,
     updatedAt: null,
@@ -305,7 +371,6 @@ const FIXTURE_TASKS: TaskItem[] = [
     archivedAt: null,
     archivedBy: null,
   },
-  // Archived task: MUST be excluded by default
   {
     id: 'tbhgn_archived_99',
     displayCode: '99',
@@ -336,7 +401,6 @@ const FIXTURE_TASKS: TaskItem[] = [
     archivedAt: '2026-05-01T00:00:00Z',
     archivedBy: 'uid_admin',
   },
-  // B1 test record: MUST be excluded by default
   {
     id: 'b1_test_task_01',
     displayCode: 'TEST-1',
@@ -368,22 +432,24 @@ let baseUrl: string;
 let mcpUrl: string;
 let signingPrivateKey: CryptoKey;
 let roguePrivateKey: CryptoKey;
+let localJwks: ReturnType<typeof createLocalJWKSet>;
 const auditLogs: McpAuditEntry[] = [];
 
 async function issueOAuthJwt(params: {
-  uid: string;
+  sub: string;
   scope?: string;
   issuer?: string;
   audience?: string;
   expiresInSec?: number;
   useRogueKey?: boolean;
   includeEmailClaim?: boolean;
+  extraClaims?: Record<string, unknown>;
 }): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const exp = now + (params.expiresInSec ?? 3600);
   const payload: Record<string, unknown> = {
-    firebase_uid: params.uid,
     scope: params.scope ?? 'mcp:read',
+    ...(params.extraClaims ?? {}),
   };
   if (params.includeEmailClaim) {
     payload.email = SECRET_EMAIL_SENTINEL;
@@ -392,21 +458,24 @@ async function issueOAuthJwt(params: {
     .setProtectedHeader({ alg: 'RS256', kid: 'test-key-1' })
     .setIssuer(params.issuer ?? OAUTH_ISSUER)
     .setAudience(params.audience ?? mcpUrl)
-    .setSubject(params.uid)
+    .setSubject(params.sub)
     .setIssuedAt(now - 5)
     .setExpirationTime(exp)
     .sign(params.useRogueKey ? roguePrivateKey : signingPrivateKey);
 }
 
-async function createConnectedMcpClient(token: string): Promise<{
+async function createConnectedMcpClient(
+  targetMcpUrl: string,
+  token: string
+): Promise<{
   client: Client;
   transport: StreamableHTTPClientTransport;
 }> {
   const client = new Client({
     name: 'tbhgn-test-client',
-    version: '1.0.0',
+    version: '1.1.0',
   });
-  const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
+  const transport = new StreamableHTTPClientTransport(new URL(targetMcpUrl), {
     requestInit: {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -428,7 +497,7 @@ before(async () => {
   const roguePair = await generateKeyPair('RS256');
   roguePrivateKey = roguePair.privateKey;
 
-  const localJwks = createLocalJWKSet({ keys: [publicJwk] });
+  localJwks = createLocalJWKSet({ keys: [publicJwk] });
 
   const app = express();
   app.disable('x-powered-by');
@@ -436,7 +505,6 @@ before(async () => {
     res.json({ ok: true });
   });
 
-  // Start server on ephemeral port first so mcpUrl is exact
   await new Promise<void>((resolve) => {
     serverHandle = app.listen(0, '127.0.0.1', () => resolve());
   });
@@ -445,8 +513,8 @@ before(async () => {
   mcpUrl = `${baseUrl}/mcp`;
 
   const config = loadMcpConfig({
-    firebaseProjectId: 'gen-lang-client-0491463422',
-    firestoreDatabaseId: 'ai-studio-tbhgnqunldnsch-a72a3d00-34e2-44ed-b19a-4166785fc8ab',
+    firebaseProjectId: EXPECTED_PROJECT_ID,
+    firestoreDatabaseId: EXPECTED_DB_ID,
     env: {
       NODE_ENV: 'test',
       MCP_ENABLED: 'true',
@@ -458,7 +526,9 @@ before(async () => {
       MCP_OAUTH_AUDIENCE: mcpUrl,
       MCP_OAUTH_JWKS_URI: `${OAUTH_ISSUER}/.well-known/jwks.json`,
       MCP_OAUTH_REQUIRED_SCOPE: 'mcp:read',
-      MCP_OAUTH_UID_CLAIM: 'firebase_uid',
+      MCP_OAUTH_IDENTITY_LINK_MODE: 'mapping_file',
+      MCP_OAUTH_UID_MAP_JSON: FIXTURE_IDENTITY_LINKS,
+      MCP_OAUTH_PROXY_AS_METADATA: 'false',
       MCP_RATE_LIMIT_PER_MIN: '300',
     },
   });
@@ -490,33 +560,81 @@ after(async () => {
   }
 });
 
-test('1. Health and OAuth RFC 9728 / RFC 8414 metadata endpoints respond cleanly with zero secrets', async () => {
+test('1. Official new domain (duan.banghadengiacngo.io.vn) has zero legacy domain references in production configs & docs', () => {
+  const prodConfig = loadMcpConfig({
+    firebaseProjectId: EXPECTED_PROJECT_ID,
+    firestoreDatabaseId: EXPECTED_DB_ID,
+    env: {
+      NODE_ENV: 'production',
+    },
+  });
+  assert.equal(prodConfig.publicUrl.toString(), TBHGN_OFFICIAL_PROD_MCP_URL);
+  assert.equal(
+    prodConfig.publicUrl.toString(),
+    'https://duan.banghadengiacngo.io.vn/mcp'
+  );
+  assert.ok(prodConfig.allowedHosts.includes('duan.banghadengiacngo.io.vn'));
+  assert.equal(prodConfig.firestoreBridge.mode, 'disabled');
+
+  const filesToCheck = [
+    'server/mcp/config.ts',
+    'server/mcp/router.ts',
+    '.env.example',
+    'deploy/nginx-tbhgn.conf',
+    'DEPLOY_VPS.md',
+    'docs/MCP_V1_SETUP.md',
+  ];
+  for (const relPath of filesToCheck) {
+    const content = fs.readFileSync(path.resolve(process.cwd(), relPath), 'utf8');
+    assert.ok(
+      !content.includes('giacngo.nhamycali.com'),
+      `Legacy domain still present in ${relPath}`
+    );
+  }
+});
+
+test('2. Health & RFC 9728 Protected Resource Metadata are accurate, and TBHGN does NOT fabricate fake AS metadata', async () => {
   const healthRes = await fetch(`${baseUrl}/api/mcp/health`);
   assert.equal(healthRes.status, 200);
-  const health = (await healthRes.json()) as Record<string, unknown>;
+  const health = (await healthRes.json()) as {
+    ok: boolean;
+    mode: string;
+    toolCount: number;
+    resource: string;
+    auth: {
+      oauthConfigured: boolean;
+      identityLinkMode: string;
+      identityLinksConfigured: boolean;
+    };
+  };
   assert.equal(health.ok, true);
-  assert.equal(health.mode, 'read_only_v1');
+  assert.equal(health.mode, 'read_only_v1.1');
   assert.equal(health.toolCount, 6);
+  assert.equal(health.resource, mcpUrl);
+  assert.equal(health.auth.oauthConfigured, true);
+  assert.equal(health.auth.identityLinkMode, 'mapping_file');
+  assert.equal(health.auth.identityLinksConfigured, true);
 
   const prmRoot = await fetch(`${baseUrl}/.well-known/oauth-protected-resource`);
   assert.equal(prmRoot.status, 200);
   const prmRootJson = (await prmRoot.json()) as Record<string, unknown>;
   assert.equal(prmRootJson.resource, mcpUrl);
+  assert.deepEqual(prmRootJson.authorization_servers, [OAUTH_ISSUER]);
   assert.deepEqual(prmRootJson.scopes_supported, ['mcp:read']);
 
   const prmPath = await fetch(
     `${baseUrl}/.well-known/oauth-protected-resource/mcp`
   );
   assert.equal(prmPath.status, 200);
+  const prmPathJson = (await prmPath.json()) as Record<string, unknown>;
+  assert.equal(prmPathJson.resource, mcpUrl);
 
+  // Default proxyAsMetadata=false MUST NOT serve fabricated AS metadata on TBHGN origin
   const asMeta = await fetch(`${baseUrl}/.well-known/oauth-authorization-server`);
-  assert.equal(asMeta.status, 200);
-  const asMetaJson = (await asMeta.json()) as Record<string, unknown>;
-  assert.equal(asMetaJson.issuer, OAUTH_ISSUER);
+  assert.equal(asMeta.status, 404);
 });
 
-test('2. Unauthenticated, forged, expired, wrong-aud, wrong-iss, and insufficient-scope tokens are rejected fail-closed', async () => {
-  // Missing token -> 401 + WWW-Authenticate
+test('3. Unauthenticated, forged, expired, wrong-aud, wrong-iss, and insufficient-scope tokens are rejected fail-closed', async () => {
   const noAuth = await fetch(mcpUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -527,8 +645,10 @@ test('2. Unauthenticated, forged, expired, wrong-aud, wrong-iss, and insufficien
   assert.match(wwwAuth, /Bearer/i);
   assert.match(wwwAuth, /oauth-protected-resource/i);
 
-  // Forged signature (signed by rogue key) -> 401
-  const forged = await issueOAuthJwt({ uid: 'uid_admin', useRogueKey: true });
+  const forged = await issueOAuthJwt({
+    sub: 'idp_sub_admin',
+    useRogueKey: true,
+  });
   const forgedRes = await fetch(mcpUrl, {
     method: 'POST',
     headers: {
@@ -539,8 +659,10 @@ test('2. Unauthenticated, forged, expired, wrong-aud, wrong-iss, and insufficien
   });
   assert.equal(forgedRes.status, 401);
 
-  // Expired token -> 401
-  const expired = await issueOAuthJwt({ uid: 'uid_admin', expiresInSec: -60 });
+  const expired = await issueOAuthJwt({
+    sub: 'idp_sub_admin',
+    expiresInSec: -60,
+  });
   const expiredRes = await fetch(mcpUrl, {
     method: 'POST',
     headers: {
@@ -551,9 +673,8 @@ test('2. Unauthenticated, forged, expired, wrong-aud, wrong-iss, and insufficien
   });
   assert.equal(expiredRes.status, 401);
 
-  // Wrong audience -> 401
   const wrongAud = await issueOAuthJwt({
-    uid: 'uid_admin',
+    sub: 'idp_sub_admin',
     audience: 'https://other-service.example/mcp',
   });
   const wrongAudRes = await fetch(mcpUrl, {
@@ -566,9 +687,8 @@ test('2. Unauthenticated, forged, expired, wrong-aud, wrong-iss, and insufficien
   });
   assert.equal(wrongAudRes.status, 401);
 
-  // Wrong issuer -> 401
   const wrongIss = await issueOAuthJwt({
-    uid: 'uid_admin',
+    sub: 'idp_sub_admin',
     issuer: 'https://evil-idp.example',
   });
   const wrongIssRes = await fetch(mcpUrl, {
@@ -581,9 +701,8 @@ test('2. Unauthenticated, forged, expired, wrong-aud, wrong-iss, and insufficien
   });
   assert.equal(wrongIssRes.status, 401);
 
-  // Insufficient scope -> 403
   const wrongScope = await issueOAuthJwt({
-    uid: 'uid_admin',
+    sub: 'idp_sub_admin',
     scope: 'openid profile',
   });
   const wrongScopeRes = await fetch(mcpUrl, {
@@ -597,8 +716,44 @@ test('2. Unauthenticated, forged, expired, wrong-aud, wrong-iss, and insufficien
   assert.equal(wrongScopeRes.status, 403);
 });
 
-test('3. Locked account (isActive: false) and unknown UID are rejected with 403', async () => {
-  const lockedToken = await issueOAuthJwt({ uid: 'uid_locked' });
+test('4. Unlinked OAuth user, unverified link, spoofed firebase_uid/email claims, locked account, and missing /users profile are rejected with 403', async () => {
+  // Unlinked subject EVEN WITH matching email & forged firebase_uid claim MUST be rejected in mapping_file mode!
+  const unlinkedToken = await issueOAuthJwt({
+    sub: 'idp_sub_stranger',
+    includeEmailClaim: true,
+    extraClaims: {
+      firebase_uid: 'uid_admin',
+      'https://duan.banghadengiacngo.io.vn/firebase_uid': 'uid_admin',
+    },
+  });
+  const unlinkedRes = await fetch(mcpUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${unlinkedToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+  });
+  assert.equal(unlinkedRes.status, 403);
+  const unlinkedBody = (await unlinkedRes.json()) as { error: string };
+  assert.equal(unlinkedBody.error, 'oauth_identity_not_linked');
+
+  // Unverified link (`verifiedByAdmin: false`) MUST be rejected!
+  const unverifiedLinkToken = await issueOAuthJwt({
+    sub: 'idp_sub_unverified',
+  });
+  const unverifiedRes = await fetch(mcpUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${unverifiedLinkToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+  });
+  assert.equal(unverifiedRes.status, 403);
+
+  // Locked user (`isActive: false`) -> 403
+  const lockedToken = await issueOAuthJwt({ sub: 'idp_sub_locked' });
   const lockedRes = await fetch(mcpUrl, {
     method: 'POST',
     headers: {
@@ -609,20 +764,51 @@ test('3. Locked account (isActive: false) and unknown UID are rejected with 403'
   });
   assert.equal(lockedRes.status, 403);
 
-  const unknownToken = await issueOAuthJwt({ uid: 'uid_does_not_exist' });
-  const unknownRes = await fetch(mcpUrl, {
+  // Missing `/users/{uid}` -> 403
+  const missingProfileToken = await issueOAuthJwt({
+    sub: 'idp_sub_missing_profile',
+  });
+  const missingProfileRes = await fetch(mcpUrl, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${unknownToken}`,
+      Authorization: `Bearer ${missingProfileToken}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
   });
-  assert.equal(unknownRes.status, 403);
+  assert.equal(missingProfileRes.status, 403);
+
+  // Dual verification (`both_strict`) blocks mismatch between server map and IdP claim
+  const strictLinker = createOAuthIdentityLinker({
+    issuer: OAUTH_ISSUER,
+    audience: mcpUrl,
+    requiredScope: 'mcp:read',
+    identityLinkMode: 'both_strict',
+    uidClaim: 'firebase_uid',
+    uidMapJson: FIXTURE_IDENTITY_LINKS,
+    proxyAsMetadata: false,
+  });
+  assert.throws(
+    () =>
+      strictLinker.resolveFirebaseUid({
+        issuer: OAUTH_ISSUER,
+        subject: 'idp_sub_member',
+        claims: { firebase_uid: 'uid_admin' }, // Attempted privilege escalation!
+      }),
+    /không khớp/
+  );
+  assert.equal(
+    strictLinker.resolveFirebaseUid({
+      issuer: OAUTH_ISSUER,
+      subject: 'idp_sub_member',
+      claims: { firebase_uid: 'uid_member' },
+    }),
+    'uid_member'
+  );
 });
 
-test('4. DNS rebinding protection rejects disallowed Origin and stateless GET/DELETE return 405', async () => {
-  const token = await issueOAuthJwt({ uid: 'uid_admin' });
+test('5. DNS rebinding protection rejects disallowed Origin and stateless GET/DELETE return 405', async () => {
+  const token = await issueOAuthJwt({ sub: 'idp_sub_admin' });
 
   const badOrigin = await fetch(mcpUrl, {
     method: 'POST',
@@ -648,9 +834,12 @@ test('4. DNS rebinding protection rejects disallowed Origin and stateless GET/DE
   assert.equal(delRes.status, 405);
 });
 
-test('5. Real MCP Client initialize & tools/list returns strictly 6 read-only tools with ZERO write tools', async () => {
-  const token = await issueOAuthJwt({ uid: 'uid_admin', includeEmailClaim: true });
-  const { client, transport } = await createConnectedMcpClient(token);
+test('6. Real MCP Client initialize & tools/list returns strictly 6 read-only tools and whoami ignores spoofed arguments', async () => {
+  const token = await issueOAuthJwt({
+    sub: 'idp_sub_admin',
+    includeEmailClaim: true,
+  });
+  const { client, transport } = await createConnectedMcpClient(mcpUrl, token);
   try {
     const listed = await client.listTools();
     const names = listed.tools.map((t) => t.name).sort();
@@ -662,7 +851,6 @@ test('5. Real MCP Client initialize & tools/list returns strictly 6 read-only to
       assert.equal(tool.annotations?.destructiveHint, false);
     }
 
-    // Verify whoami never leaks email claim and always reflects verified token actor
     const whoamiRes = await client.callTool({
       name: 'whoami',
       arguments: { uid: 'uid_fake_spoof', role: 'viewer' },
@@ -683,9 +871,9 @@ test('5. Real MCP Client initialize & tools/list returns strictly 6 read-only to
   }
 });
 
-test('6. get_project_summary excludes archived/B1 test tasks, keeps status=null separate, and never double-counts overdue+pending', async () => {
-  const token = await issueOAuthJwt({ uid: 'uid_admin' });
-  const { client, transport } = await createConnectedMcpClient(token);
+test('7. get_project_summary excludes archived/B1 test tasks, keeps status=null separate, and deduplicates overdue+pending', async () => {
+  const token = await issueOAuthJwt({ sub: 'idp_sub_admin' });
+  const { client, transport } = await createConnectedMcpClient(mcpUrl, token);
   try {
     const res = await client.callTool({
       name: 'get_project_summary',
@@ -704,12 +892,9 @@ test('6. get_project_summary excludes archived/B1 test tasks, keeps status=null 
       documentsCount: { total: number; reference: number; result: number };
     };
 
-    // 10 fixture tasks minus 1 archived minus 1 B1 test = 8 active tasks
     assert.equal(data.totalTasks, 8);
     assert.equal(data.parentTasksCount, 6);
     assert.equal(data.childTasksCount, 2);
-
-    // Exact 5 statuses + null kept separate
     assert.equal(data.statusCounts.inProgress, 2);
     assert.equal(data.statusCounts.pendingApproval, 2);
     assert.equal(data.statusCounts.paused, 1);
@@ -717,18 +902,14 @@ test('6. get_project_summary excludes archived/B1 test tasks, keeps status=null 
     assert.equal(data.statusCounts.notStarted, 1);
     assert.equal(data.statusCounts.missingStatus, 1);
 
-    // Sum equals total
     const sum = Object.values(data.statusCounts).reduce((a, b) => a + b, 0);
     assert.equal(sum, data.totalTasks);
 
-    // Overdue = 1 (tbhgn_child_1_1), Pending = 2 (tbhgn_child_1_1 + tbhgn_dup_code_a), Overlap = 1 -> Unique watchlist = 2!
     assert.equal(data.overdueCount, 1);
     assert.equal(data.overlapOverdueAndPendingCount, 1);
     assert.equal(data.watchlistUniqueCount, 2);
     assert.equal(data.actionableApprovalsForMeCount, 2);
     assert.equal(data.needsReviewCount, 2);
-
-    // Documents exclude archived task's link -> 2 reference + 2 result = 4
     assert.equal(data.documentsCount.total, 4);
     assert.equal(data.documentsCount.reference, 2);
     assert.equal(data.documentsCount.result, 2);
@@ -738,11 +919,10 @@ test('6. get_project_summary excludes archived/B1 test tasks, keeps status=null 
   }
 });
 
-test('7. list_tasks filtering, status=missing_status, pagination cursor, and official assignee resolution', async () => {
-  const token = await issueOAuthJwt({ uid: 'uid_member' });
-  const { client, transport } = await createConnectedMcpClient(token);
+test('8. list_tasks filtering, status=missing_status, pagination cursor, and official assignee resolution', async () => {
+  const token = await issueOAuthJwt({ sub: 'idp_sub_member' });
+  const { client, transport } = await createConnectedMcpClient(mcpUrl, token);
   try {
-    // Filter missing_status only
     const nullRes = await client.callTool({
       name: 'list_tasks',
       arguments: { status: 'missing_status' },
@@ -755,7 +935,6 @@ test('7. list_tasks filtering, status=missing_status, pagination cursor, and off
     assert.equal(nullData.tasks[0].id, 'tbhgn_task_null_status');
     assert.equal(nullData.tasks[0].status, null);
 
-    // Pagination test (limit 3 across 8 active tasks -> 3 + 3 + 2)
     const p1 = (
       await client.callTool({ name: 'list_tasks', arguments: { limit: 3 } })
     ).structuredContent as {
@@ -803,11 +982,10 @@ test('7. list_tasks filtering, status=missing_status, pagination cursor, and off
   }
 });
 
-test('8. get_task returns parent/child/separated links, handles ambiguous displayCode safely, and hides archived/test tasks', async () => {
-  const token = await issueOAuthJwt({ uid: 'uid_mod' });
-  const { client, transport } = await createConnectedMcpClient(token);
+test('9. get_task returns parent/child/separated links, handles ambiguous displayCode safely, and hides archived/test tasks', async () => {
+  const token = await issueOAuthJwt({ sub: 'idp_sub_mod' });
+  const { client, transport } = await createConnectedMcpClient(mcpUrl, token);
   try {
-    // Parent task with children & separated links
     const parentRes = (
       await client.callTool({
         name: 'get_task',
@@ -833,7 +1011,6 @@ test('8. get_task returns parent/child/separated links, handles ambiguous displa
     assert.equal(parentRes.task.resultLinks.length, 1);
     assert.equal(parentRes.task.resultLinks[0].group, 'result');
 
-    // Ambiguous displayCode "9" -> MUST NOT guess
     const ambigRes = (
       await client.callTool({
         name: 'get_task',
@@ -848,7 +1025,6 @@ test('8. get_task returns parent/child/separated links, handles ambiguous displa
     assert.equal(ambigRes.task, null);
     assert.equal(ambigRes.candidates.length, 2);
 
-    // Archived task must return not_found
     const archivedRes = (
       await client.callTool({
         name: 'get_task',
@@ -857,7 +1033,6 @@ test('8. get_task returns parent/child/separated links, handles ambiguous displa
     ).structuredContent as { lookupStatus: string };
     assert.equal(archivedRes.lookupStatus, 'not_found');
 
-    // B1 test task must return not_found
     const testTaskRes = (
       await client.callTool({
         name: 'get_task',
@@ -871,9 +1046,9 @@ test('8. get_task returns parent/child/separated links, handles ambiguous displa
   }
 });
 
-test('9. search_documents strictly separates reference vs result and excludes archived task links', async () => {
-  const token = await issueOAuthJwt({ uid: 'uid_viewer' });
-  const { client, transport } = await createConnectedMcpClient(token);
+test('10. search_documents strictly separates reference vs result and excludes archived task links', async () => {
+  const token = await issueOAuthJwt({ sub: 'idp_sub_viewer' });
+  const { client, transport } = await createConnectedMcpClient(mcpUrl, token);
   try {
     const refOnly = (
       await client.callTool({
@@ -900,7 +1075,6 @@ test('9. search_documents strictly separates reference vs result and excludes ar
     assert.equal(resOnly.totalMatched, 2);
     assert.ok(resOnly.documents.every((d) => d.group === 'result'));
 
-    // Archived secret document must NOT appear
     const archivedSearch = (
       await client.callTool({
         name: 'search_documents',
@@ -914,10 +1088,9 @@ test('9. search_documents strictly separates reference vs result and excludes ar
   }
 });
 
-test('10. list_pending_approvals enforces RBAC across Admin/Moderator vs Member/Viewer', async () => {
-  // Admin sees 2 actionable approvals labeled "Cần bạn duyệt"
-  const adminToken = await issueOAuthJwt({ uid: 'uid_admin' });
-  const adminConn = await createConnectedMcpClient(adminToken);
+test('11. list_pending_approvals enforces RBAC across Admin/Moderator vs Member/Viewer', async () => {
+  const adminToken = await issueOAuthJwt({ sub: 'idp_sub_admin' });
+  const adminConn = await createConnectedMcpClient(mcpUrl, adminToken);
   try {
     const res = (
       await adminConn.client.callTool({
@@ -938,9 +1111,8 @@ test('10. list_pending_approvals enforces RBAC across Admin/Moderator vs Member/
     await adminConn.client.close();
   }
 
-  // Member without canApprove sees 0 actionable approvals and NEVER gets "Cần bạn duyệt"
-  const memberToken = await issueOAuthJwt({ uid: 'uid_member' });
-  const memberConn = await createConnectedMcpClient(memberToken);
+  const memberToken = await issueOAuthJwt({ sub: 'idp_sub_member' });
+  const memberConn = await createConnectedMcpClient(mcpUrl, memberToken);
   try {
     const actionable = (
       await memberConn.client.callTool({
@@ -974,9 +1146,8 @@ test('10. list_pending_approvals enforces RBAC across Admin/Moderator vs Member/
     await memberConn.client.close();
   }
 
-  // Viewer also sees 0 actionable approvals
-  const viewerToken = await issueOAuthJwt({ uid: 'uid_viewer' });
-  const viewerConn = await createConnectedMcpClient(viewerToken);
+  const viewerToken = await issueOAuthJwt({ sub: 'idp_sub_viewer' });
+  const viewerConn = await createConnectedMcpClient(mcpUrl, viewerToken);
   try {
     const res = (
       await viewerConn.client.callTool({
@@ -992,10 +1163,345 @@ test('10. list_pending_approvals enforces RBAC across Admin/Moderator vs Member/
   }
 });
 
-test('11. FirestoreReadRepository exposes strictly read-only methods and audit logs contain zero PII/tokens', () => {
+test('12. End-to-End V1.1 Firestore Read Bridge: OAuth JWT -> Identity Link -> RS256 SA Token Exchange -> Named DB GET-only -> Server RBAC & Zero PII', async () => {
+  // Generate ephemeral RSA keypair simulating a least-privilege roles/datastore.viewer Service Account
+  const saKeys = await generateKeyPair('RS256', { extractable: true });
+  const saPrivatePem = await exportPKCS8(saKeys.privateKey);
+  const saEmail = 'tbhgn-mcp-firestore-ro@gen-lang-client-0491463422.iam.gserviceaccount.com';
+  const issuedBridgeToken = 'gcp-short-lived-ro-token-xyz';
+
+  let tokenExchangeCalls = 0;
+  let forceTokenFailure = false;
+  const recordedFirestoreCalls: Array<{
+    method: string;
+    path: string;
+    authHeader: string;
+  }> = [];
+
+  // Mock Google OAuth2 Token Server + Mock Firestore REST API v1 + Mock IdP Discovery
+  const mockCloudApp = express();
+  mockCloudApp.use(express.urlencoded({ extended: false }));
+
+  let mockCloudBase = '';
+
+  // 1. Mock genuine IdP discovery endpoint
+  mockCloudApp.get('/.well-known/oauth-authorization-server', (_req, res) => {
+    res.json({
+      issuer: mockCloudBase,
+      authorization_endpoint: `${mockCloudBase}/authorize`,
+      token_endpoint: `${mockCloudBase}/oauth/token`,
+      jwks_uri: `${mockCloudBase}/.well-known/jwks.json`,
+      code_challenge_methods_supported: ['S256'],
+      client_id_metadata_document_supported: true,
+    });
+  });
+
+  // 2. Mock Google OAuth2 Token Exchange endpoint (verifies RS256 JWT assertion cryptographically!)
+  mockCloudApp.post('/google-oauth2-token', async (req, res) => {
+    tokenExchangeCalls += 1;
+    if (forceTokenFailure) {
+      res.status(500).json({ error: 'temporarily_unavailable' });
+      return;
+    }
+    const grantType = req.body.grant_type;
+    const assertion = req.body.assertion;
+    assert.equal(grantType, 'urn:ietf:params:oauth:grant-type:jwt-bearer');
+    assert.equal(typeof assertion, 'string');
+
+    const { payload } = await jwtVerify(assertion, saKeys.publicKey, {
+      issuer: saEmail,
+      audience: `${mockCloudBase}/google-oauth2-token`,
+      algorithms: ['RS256'],
+    });
+    assert.equal(payload.scope, FIRESTORE_REST_OAUTH_SCOPE);
+
+    res.json({
+      access_token: issuedBridgeToken,
+      token_type: 'Bearer',
+      expires_in: 3600,
+    });
+  });
+
+  // 3. Mock Firestore REST API v1 (strictly checks exact named DB path, GET-only, and bridge Bearer token!)
+  const expectedPrefix = `/v1/projects/${EXPECTED_PROJECT_ID}/databases/${EXPECTED_DB_ID}/documents`;
+  mockCloudApp.use('/v1', (req, res) => {
+    recordedFirestoreCalls.push({
+      method: req.method,
+      path: `/v1${req.path}`,
+      authHeader: req.headers.authorization ?? '',
+    });
+    assert.equal(req.method, 'GET', 'Firestore Read Bridge MUST only send GET!');
+    assert.equal(
+      req.headers.authorization,
+      `Bearer ${issuedBridgeToken}`,
+      'Firestore MUST receive bridge token, never external OAuth JWT!'
+    );
+    assert.ok(
+      `/v1${req.path}`.startsWith(expectedPrefix),
+      `Unexpected Firestore DB path: /v1${req.path}`
+    );
+
+    const subPath = `/v1${req.path}`.slice(expectedPrefix.length);
+
+    if (subPath === '/users/uid_member') {
+      res.json({
+        name: `${expectedPrefix}/users/uid_member`,
+        fields: {
+          displayName: { stringValue: 'Khánh' },
+          email: { stringValue: SECRET_EMAIL_SENTINEL },
+          sheetAlias: { stringValue: 'Khanh_Secret_Alias' },
+          role: { stringValue: 'member' },
+          canApprove: { booleanValue: false },
+          isActive: { booleanValue: true },
+        },
+      });
+      return;
+    }
+    if (subPath === '/memberDirectory') {
+      res.json({
+        documents: [
+          {
+            name: `${expectedPrefix}/memberDirectory/uid_member`,
+            fields: {
+              displayName: { stringValue: 'Khánh' },
+              isActive: { booleanValue: true },
+            },
+          },
+          {
+            name: `${expectedPrefix}/memberDirectory/uid_admin`,
+            fields: {
+              displayName: { stringValue: 'Sư Phụ' },
+              isActive: { booleanValue: true },
+            },
+          },
+        ],
+      });
+      return;
+    }
+    if (subPath === '/categories') {
+      res.json({
+        documents: [
+          {
+            name: `${expectedPrefix}/categories/cat_outline`,
+            fields: {
+              name: { stringValue: 'Đề cương' },
+              color: { stringValue: '#13294B' },
+              sortOrder: { integerValue: '1' },
+              isActive: { booleanValue: true },
+            },
+          },
+        ],
+      });
+      return;
+    }
+    if (subPath === '/tasks') {
+      res.json({
+        documents: [
+          {
+            name: `${expectedPrefix}/tasks/tbhgn_live_1`,
+            fields: {
+              displayCode: { stringValue: '1' },
+              parentId: { nullValue: null },
+              sortOrder: { integerValue: '1' },
+              title: { stringValue: 'Nhiệm vụ qua cầu nối Firestore' },
+              categoryId: { stringValue: 'cat_outline' },
+              category: { stringValue: 'Đề cương' },
+              assigneeUids: {
+                arrayValue: { values: [{ stringValue: 'uid_member' }] },
+              },
+              assignees: {
+                arrayValue: { values: [{ stringValue: 'Khánh' }] },
+              },
+              status: { stringValue: 'Chờ duyệt' },
+              version: { integerValue: '1' },
+            },
+          },
+        ],
+      });
+      return;
+    }
+
+    res.status(404).json({ error: 'NOT_FOUND' });
+  });
+
+  const mockCloudServer = await new Promise<ReturnType<express.Express['listen']>>(
+    (resolve) => {
+      const s = mockCloudApp.listen(0, '127.0.0.1', () => resolve(s));
+    }
+  );
+  const cloudAddr = mockCloudServer.address() as AddressInfo;
+  mockCloudBase = `http://127.0.0.1:${cloudAddr.port}`;
+
+  // Mount a dedicated V1.1 MCP app wired with the REAL Firestore Read Bridge (NO mock repo!)
+  const bridgeApp = express();
+  const bridgeServer = await new Promise<ReturnType<express.Express['listen']>>(
+    (resolve) => {
+      const s = bridgeApp.listen(0, '127.0.0.1', () => resolve(s));
+    }
+  );
+  const bridgeAddr = bridgeServer.address() as AddressInfo;
+  const bridgeMcpUrl = `http://127.0.0.1:${bridgeAddr.port}/mcp`;
+
+  try {
+    // Verify genuine IdP AS metadata discovery
+    const discovered = await discoverAuthorizationServerMetadata(mockCloudBase, {
+      allowLocalhostHttp: true,
+    });
+    assert.equal(discovered.issuer, mockCloudBase);
+    assert.equal(discovered.client_id_metadata_document_supported, true);
+
+    const bridgeConfig = loadMcpConfig({
+      firebaseProjectId: EXPECTED_PROJECT_ID,
+      firestoreDatabaseId: EXPECTED_DB_ID,
+      env: {
+        NODE_ENV: 'test',
+        MCP_ENABLED: 'true',
+        MCP_PUBLIC_URL: bridgeMcpUrl,
+        MCP_ALLOWED_HOSTS: '127.0.0.1,localhost',
+        MCP_ALLOWED_ORIGINS: '127.0.0.1,localhost',
+        MCP_OAUTH_ISSUER: mockCloudBase,
+        MCP_OAUTH_AUDIENCE: bridgeMcpUrl,
+        MCP_OAUTH_REQUIRED_SCOPE: 'mcp:read',
+        MCP_OAUTH_IDENTITY_LINK_MODE: 'mapping_file',
+        MCP_OAUTH_UID_MAP_JSON: JSON.stringify({
+          version: 1,
+          links: [
+            {
+              issuer: mockCloudBase,
+              sub: 'chatgpt_user_khanh',
+              firebaseUid: 'uid_member',
+              verifiedByAdmin: true,
+            },
+          ],
+        }),
+        MCP_OAUTH_PROXY_AS_METADATA: 'true',
+        MCP_FIRESTORE_BRIDGE_MODE: 'service_account_file',
+        MCP_RATE_LIMIT_PER_MIN: '300',
+      },
+    });
+
+    const realBridge = createFirestoreReadBridge(bridgeConfig.firestoreBridge, {
+      allowLoopbackTokenEndpoint: true,
+      testServiceAccount: {
+        clientEmail: saEmail,
+        privateKeyPem: saPrivatePem,
+        tokenUri: `${mockCloudBase}/google-oauth2-token`,
+      },
+    });
+    assert.equal(realBridge.ready, true);
+
+    mountMcpServer(bridgeApp, {
+      config: bridgeConfig,
+      verifier: createMcpTokenVerifier(bridgeConfig, {
+        oauthJwks: localJwks,
+        allowLocalhostDiscovery: true,
+      }),
+      firestoreBridge: realBridge,
+      allowLocalhostDiscovery: true,
+      firestoreApiBaseUrlOverride: `${mockCloudBase}/v1`,
+      referenceDate: REFERENCE_DATE,
+      auditLogger: (entry) => auditLogs.push(entry),
+    });
+
+    // Optional verbatim AS metadata proxy returns genuine IdP metadata
+    const proxiedAsMeta = await fetch(
+      `http://127.0.0.1:${bridgeAddr.port}/.well-known/oauth-authorization-server`
+    );
+    assert.equal(proxiedAsMeta.status, 200);
+    const proxiedJson = (await proxiedAsMeta.json()) as Record<string, unknown>;
+    assert.equal(proxiedJson.issuer, mockCloudBase);
+    assert.equal(proxiedJson.authorization_endpoint, `${mockCloudBase}/authorize`);
+
+    // Connect real MCP Client with OAuth JWT -> full bridge -> mock Firestore REST API v1!
+    const memberOAuthJwt = await issueOAuthJwt({
+      sub: 'chatgpt_user_khanh',
+      issuer: mockCloudBase,
+      audience: bridgeMcpUrl,
+      includeEmailClaim: true,
+    });
+
+    const { client, transport } = await createConnectedMcpClient(
+      bridgeMcpUrl,
+      memberOAuthJwt
+    );
+    try {
+      const whoami = await client.callTool({ name: 'whoami', arguments: {} });
+      const whoamiData = whoami.structuredContent as Record<string, unknown>;
+      assert.equal(whoamiData.uid, 'uid_member');
+      assert.equal(whoamiData.displayName, 'Khánh');
+      assert.equal(whoamiData.role, 'member');
+      assert.ok(!JSON.stringify(whoami).includes(SECRET_EMAIL_SENTINEL));
+      assert.ok(!JSON.stringify(whoami).includes(issuedBridgeToken));
+
+      const summary = await client.callTool({
+        name: 'get_project_summary',
+        arguments: {},
+      });
+      const summaryData = summary.structuredContent as {
+        totalTasks: number;
+        statusCounts: { pendingApproval: number };
+        actionableApprovalsForMeCount: number;
+      };
+      assert.equal(summaryData.totalTasks, 1);
+      assert.equal(summaryData.statusCounts.pendingApproval, 1);
+      // Server-side RBAC: Member cannot approve!
+      assert.equal(summaryData.actionableApprovalsForMeCount, 0);
+
+      // Verify token was cached (only 1 token exchange for multiple requests!)
+      assert.equal(tokenExchangeCalls, 1);
+
+      // Verify Member NEVER listed `/users` collection — only `/users/uid_member` + `/memberDirectory`!
+      const calledPaths = recordedFirestoreCalls.map((c) =>
+        c.path.slice(expectedPrefix.length)
+      );
+      assert.ok(calledPaths.includes('/users/uid_member'));
+      assert.ok(calledPaths.includes('/memberDirectory'));
+      assert.ok(!calledPaths.includes('/users'));
+      assert.ok(recordedFirestoreCalls.every((c) => c.method === 'GET'));
+    } finally {
+      await transport.close();
+      await client.close();
+    }
+
+    // Fail-closed test: disabled bridge returns 503 and never reads Firestore unauthenticated
+    const disabledBridge = createFirestoreReadBridge({ mode: 'disabled' });
+    assert.equal(disabledBridge.ready, false);
+    await assert.rejects(
+      () => disabledBridge.getAccessToken(),
+      /chưa được bật/
+    );
+
+    // Fail-closed test: token exchange HTTP 500 throws 503 McpFirestoreBridgeError
+    forceTokenFailure = true;
+    const failingBridge = createFirestoreReadBridge(
+      bridgeConfig.firestoreBridge,
+      {
+        allowLoopbackTokenEndpoint: true,
+        testServiceAccount: {
+          clientEmail: saEmail,
+          privateKeyPem: saPrivatePem,
+          tokenUri: `${mockCloudBase}/google-oauth2-token`,
+        },
+      }
+    );
+    await assert.rejects(
+      () => failingBridge.getAccessToken(),
+      /Không thể trao đổi access token/
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      bridgeServer.close((err) => (err ? reject(err) : resolve()));
+    });
+    await new Promise<void>((resolve, reject) => {
+      mockCloudServer.close((err) => (err ? reject(err) : resolve()));
+    });
+  }
+});
+
+test('13. FirestoreReadRepository exposes strictly read-only methods and audit logs contain zero PII/tokens', () => {
   const restRepo = createFirestoreReadRepository({
-    projectId: 'gen-lang-client-0491463422',
-    databaseId: 'test-db',
+    projectId: EXPECTED_PROJECT_ID,
+    databaseId: EXPECTED_DB_ID,
     bearerToken: 'dummy-token',
   });
   const methods = Object.keys(restRepo).sort();
@@ -1010,4 +1516,5 @@ test('11. FirestoreReadRepository exposes strictly read-only methods and audit l
   const serializedLogs = JSON.stringify(auditLogs);
   assert.ok(!serializedLogs.includes(SECRET_EMAIL_SENTINEL));
   assert.ok(!serializedLogs.includes('Bearer'));
+  assert.ok(!serializedLogs.includes('gcp-short-lived-ro-token'));
 });
